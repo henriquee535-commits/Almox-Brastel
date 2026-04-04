@@ -4,61 +4,49 @@ import sqlite3
 import uuid
 from datetime import datetime, timedelta
 import io
+import base64
 
 # 1. CONFIGURAÇÃO DA PÁGINA
 st.set_page_config(page_title="Almoxarifado Pro", layout="wide", page_icon="📦")
 
-# --- CSS PERSONALIZADO: header com logos mais bonito ---
+# --- CSS PERSONALIZADO ---
 st.markdown("""
 <style>
-/* Importa fonte elegante */
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&display=swap');
 
 html, body, [class*="css"] {
     font-family: 'Sora', sans-serif;
 }
 
-/* Header customizado */
 .header-container {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 18px 32px;
+    padding: 16px 32px;
     background: linear-gradient(135deg, #0f2027 0%, #1a3a4a 60%, #0d3349 100%);
     border-radius: 16px;
     margin-bottom: 24px;
     box-shadow: 0 4px 24px rgba(0,0,0,0.18);
 }
 
-.header-logos {
+.header-logo-wrap {
     display: flex;
     align-items: center;
-    gap: 14px;
-}
-
-.header-logo-box {
-    background: rgba(255,255,255,0.10);
-    border-radius: 10px;
-    padding: 8px 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 80px;
-    min-height: 48px;
-    font-size: 0.85rem;
-    color: #a0c4d8;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    border: 1px solid rgba(255,255,255,0.10);
+    gap: 12px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    padding: 8px 18px;
 }
 
 .header-title-block {
     text-align: center;
     flex: 1;
+    padding: 0 24px;
 }
 
 .header-title-block h1 {
-    font-size: 2rem;
+    font-size: 1.9rem;
     font-weight: 700;
     color: #ffffff;
     margin: 0;
@@ -67,10 +55,10 @@ html, body, [class*="css"] {
 }
 
 .header-title-block p {
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     color: #7eb8d4;
-    margin: 4px 0 0 0;
-    letter-spacing: 0.12em;
+    margin: 5px 0 0 0;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
 }
 
@@ -83,9 +71,16 @@ html, body, [class*="css"] {
     font-size: 0.78rem;
     font-weight: 600;
     letter-spacing: 0.08em;
+    white-space: nowrap;
 }
 
-/* Métricas */
+.header-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+}
+
 [data-testid="metric-container"] {
     background: #f7fafc;
     border: 1px solid #e2e8f0;
@@ -94,7 +89,6 @@ html, body, [class*="css"] {
     box-shadow: 0 1px 4px rgba(0,0,0,0.05);
 }
 
-/* Botão primário */
 .stButton > button {
     background: linear-gradient(135deg, #1a3a4a, #0d5c8a);
     color: white;
@@ -110,10 +104,7 @@ html, body, [class*="css"] {
     color: white;
 }
 
-/* Alerta de sucesso */
-.stAlert {
-    border-radius: 10px;
-}
+.stAlert { border-radius: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -128,9 +119,9 @@ TEMPO_INATIVIDADE = 1  # Minutos
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS estoque 
+    c.execute('''CREATE TABLE IF NOT EXISTS estoque
                  (Codigo TEXT, Descricao TEXT, Quantidade REAL, CC TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS acessos 
+    c.execute('''CREATE TABLE IF NOT EXISTS acessos
                  (sessao_id TEXT PRIMARY KEY, ultimo_clique TIMESTAMP)''')
     conn.commit()
     conn.close()
@@ -152,13 +143,36 @@ def carregar_ccs():
         return ["Setor Geral"]
 
 def buscar_descricao_por_codigo(cod):
-    """Retorna a descrição já cadastrada para um código, ou None se não existir."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT DISTINCT Descricao FROM estoque WHERE Codigo=?", (cod,))
     result = c.fetchone()
     conn.close()
     return result[0] if result else None
+
+def gerar_template_xlsx():
+    """Gera template XLSX em memória e retorna bytes."""
+    template_df = pd.DataFrame({
+        'Codigo':    ['ABC001', 'ABC002'],
+        'Descricao': ['Parafuso M8', 'Cabo Elétrico 2,5mm'],
+        'Quantidade':[100, 50],
+        'CC':        ['Setor Geral', 'Manutenção']
+    })
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        template_df.to_excel(writer, index=False, sheet_name='Inventario')
+    return buf.getvalue()
+
+def logo_base64(path):
+    """Lê imagem do disco e retorna tag <img> base64 para uso em HTML."""
+    try:
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode()
+        ext = path.rsplit('.', 1)[-1].lower()
+        mime = 'image/png' if ext == 'png' else 'image/jpeg'
+        return f'<img src="data:{mime};base64,{data}" height="48" style="border-radius:6px;display:block;">'
+    except:
+        return None
 
 # --- CONTROLE DE ACESSO ---
 if 'sessao_id' not in st.session_state:
@@ -191,26 +205,33 @@ menu = st.sidebar.radio("Ir para:", ["📊 Consulta", "🔒 Almoxarifado"])
 # ==========================================
 if menu == "📊 Consulta":
 
-    # Header bonito com logos
+    # Tenta carregar logos do disco (devem estar na raiz do repositório)
+    logo1_tag = logo_base64("logo1.png") or logo_base64("logo1.jpg")
+    logo2_tag = logo_base64("logo2.png") or logo_base64("logo2.jpg")
+
+    # Fallback visual se logos não forem encontradas
+    if not logo1_tag:
+        logo1_tag = '<span style="color:#7eb8d4;font-weight:700;font-size:1rem;">Logo 1</span>'
+    if not logo2_tag:
+        logo2_tag = '<span style="color:#7eb8d4;font-weight:700;font-size:1rem;">Logo 2</span>'
+
     st.markdown(f"""
     <div class="header-container">
-        <div class="header-logos">
-            <div class="header-logo-box">🔷 Brastel</div>
+        <div class="header-logo-wrap">
+            {logo1_tag}
         </div>
         <div class="header-title-block">
             <h1>📦 Painel de Estoque</h1>
             <p>Almoxarifado Pro · Controle de Inventário</p>
         </div>
-        <div class="header-logos">
-            <div class="header-logo-box">🌀 Engia</div>
+        <div class="header-right">
+            <div class="header-logo-wrap">
+                {logo2_tag}
+            </div>
             <span class="header-badge">🟢 {total_ativos}/{LIMITE_PESSOAS} online</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
-
-    # Nota: substitua os textos "🔷 Brastel" e "🌀 Engia" por:
-    # <img src="logo1.png" height="40" style="border-radius:6px">
-    # quando suas logos estiverem disponíveis no servidor.
 
     m1, m2, m3 = st.columns(3)
     m1.metric("📦 Total de Peças", f"{df['Quantidade'].sum():.0f}" if not df.empty else 0)
@@ -236,7 +257,11 @@ else:
 
     if senha == SENHA_ACESSO:
 
-        tab1, tab2 = st.tabs(["📝 Registro Individual", "📤 Carga em Massa"])
+        tab1, tab2, tab3 = st.tabs([
+            "📝 Registro Individual",
+            "📤 Carga em Massa",
+            "🧹 Limpeza de Duplicatas"
+        ])
 
         # ------------------------------------------
         # TAB 1: REGISTRO INDIVIDUAL
@@ -259,7 +284,6 @@ else:
                 if not cod:
                     st.error("Informe o Código do item.")
                 else:
-                    # Verifica se código já existe com outra descrição
                     desc_existente = buscar_descricao_por_codigo(cod)
 
                     if desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
@@ -267,12 +291,9 @@ else:
                             f"⛔ Conflito de Descrição!\n\n"
                             f"O código **{cod}** já está cadastrado com a descrição:\n\n"
                             f"**\"{desc_existente}\"**\n\n"
-                            f"Não é permitido cadastrar o mesmo código com descrições diferentes. "
-                            f"Deixe o campo 'Descrição' em branco para usar a descrição existente, "
-                            f"ou corrija o código."
+                            f"Deixe 'Descrição' em branco para usar a existente, ou corrija o código."
                         )
                     else:
-                        # Usa a descrição já existente se não foi digitada nova
                         desc_final = desc_existente if desc_existente else desc_input
 
                         conn = sqlite3.connect(DB_NAME)
@@ -311,49 +332,38 @@ else:
             st.subheader("📤 Importar Inventário em Massa")
 
             st.info(
-                "Faça upload de um arquivo **CSV** ou **Excel (.xlsx)** com as colunas:\n\n"
+                "Faça upload de um arquivo **Excel (.xlsx)** com as colunas:\n\n"
                 "`Codigo` | `Descricao` | `Quantidade` | `CC`\n\n"
                 "• A operação padrão é **Entrada** (soma ao estoque existente).\n"
                 "• Se o código já existir com descrição diferente, a linha será **ignorada** e reportada."
             )
 
-            # Botão para baixar template
-            template_df = pd.DataFrame({
-                'Codigo': ['ABC001', 'ABC002'],
-                'Descricao': ['Parafuso M8', 'Cabo Elétrico 2,5mm'],
-                'Quantidade': [100, 50],
-                'CC': ['Setor Geral', 'Manutenção']
-            })
-            template_csv = template_df.to_csv(index=False).encode('utf-8')
+            # Template XLSX para download
             st.download_button(
-                "⬇️ Baixar Template CSV",
-                data=template_csv,
-                file_name="template_inventario.csv",
-                mime="text/csv"
+                "⬇️ Baixar Template XLSX",
+                data=gerar_template_xlsx(),
+                file_name="template_inventario.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
             arquivo = st.file_uploader(
-                "Selecione o arquivo:",
-                type=["csv", "xlsx"],
+                "Selecione o arquivo Excel (.xlsx):",
+                type=["xlsx"],
                 key="upload_massa"
             )
 
             if arquivo:
                 try:
-                    if arquivo.name.endswith('.csv'):
-                        df_upload = pd.read_csv(arquivo)
-                    else:
-                        df_upload = pd.read_excel(arquivo, engine='openpyxl')
+                    df_upload = pd.read_excel(arquivo, engine='openpyxl')
 
-                    # Valida colunas obrigatórias
                     colunas_necessarias = {'Codigo', 'Descricao', 'Quantidade', 'CC'}
                     colunas_faltando = colunas_necessarias - set(df_upload.columns)
                     if colunas_faltando:
-                        st.error(f"⛔ Colunas ausentes no arquivo: {', '.join(colunas_faltando)}")
+                        st.error(f"⛔ Colunas ausentes: {', '.join(colunas_faltando)}")
                     else:
-                        df_upload['Codigo'] = df_upload['Codigo'].astype(str).str.strip()
-                        df_upload['Descricao'] = df_upload['Descricao'].astype(str).str.strip()
-                        df_upload['CC'] = df_upload['CC'].astype(str).str.strip()
+                        df_upload['Codigo']     = df_upload['Codigo'].astype(str).str.strip()
+                        df_upload['Descricao']  = df_upload['Descricao'].astype(str).str.strip()
+                        df_upload['CC']         = df_upload['CC'].astype(str).str.strip()
                         df_upload['Quantidade'] = pd.to_numeric(df_upload['Quantidade'], errors='coerce').fillna(0)
 
                         st.write(f"**{len(df_upload)} linhas encontradas.** Pré-visualização:")
@@ -363,17 +373,14 @@ else:
                             conn = sqlite3.connect(DB_NAME)
                             cur = conn.cursor()
 
-                            ok = 0
-                            conflitos = []
-                            ignorados = []
+                            ok, conflitos, ignorados = 0, [], []
 
                             for _, row in df_upload.iterrows():
-                                cod_r = row['Codigo']
+                                cod_r  = row['Codigo']
                                 desc_r = row['Descricao']
-                                qtd_r = float(row['Quantidade'])
-                                cc_r = row['CC']
+                                qtd_r  = float(row['Quantidade'])
+                                cc_r   = row['CC']
 
-                                # Checa conflito de descrição
                                 cur.execute(
                                     "SELECT DISTINCT Descricao FROM estoque WHERE Codigo=?",
                                     (cod_r,)
@@ -392,17 +399,15 @@ else:
                                     ignorados.append(cod_r)
                                     continue
 
-                                # Atualiza ou insere
                                 cur.execute(
                                     "SELECT Quantidade FROM estoque WHERE Codigo=? AND CC=?",
                                     (cod_r, cc_r)
                                 )
                                 res = cur.fetchone()
                                 if res:
-                                    novo = res[0] + qtd_r
                                     cur.execute(
                                         "UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?",
-                                        (novo, cod_r, cc_r)
+                                        (res[0] + qtd_r, cod_r, cc_r)
                                     )
                                 else:
                                     cur.execute(
@@ -418,16 +423,107 @@ else:
 
                             if conflitos:
                                 st.warning(f"⚠️ **{len(conflitos)} linha(s) ignorada(s)** por conflito de descrição:")
-                                st.dataframe(
-                                    pd.DataFrame(conflitos),
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
+                                st.dataframe(pd.DataFrame(conflitos), use_container_width=True, hide_index=True)
 
                             if ignorados:
-                                st.info(f"ℹ️ {len(ignorados)} linha(s) ignorada(s) por quantidade zero ou inválida: {', '.join(ignorados)}")
+                                st.info(f"ℹ️ {len(ignorados)} linha(s) ignorada(s) por quantidade inválida.")
 
                             st.rerun()
 
                 except Exception as e:
                     st.error(f"Erro ao processar arquivo: {e}")
+
+        # ------------------------------------------
+        # TAB 3: LIMPEZA DE DUPLICATAS
+        # ------------------------------------------
+        with tab3:
+            st.subheader("🧹 Limpeza de Códigos com Descrições Duplicadas")
+
+            st.warning(
+                "Esta tela lista todos os códigos que possuem **mais de uma descrição diferente** no banco. "
+                "Isso pode ter ocorrido antes da regra de bloqueio ser ativada. "
+                "Escolha qual descrição é a correta e os registros conflitantes serão **unificados ou excluídos**."
+            )
+
+            # Busca códigos com múltiplas descrições
+            conn = sqlite3.connect(DB_NAME)
+            df_multi = pd.read_sql_query("""
+                SELECT Codigo, COUNT(DISTINCT Descricao) as qtd_desc
+                FROM estoque
+                GROUP BY Codigo
+                HAVING qtd_desc > 1
+            """, conn)
+            conn.close()
+
+            if df_multi.empty:
+                st.success("✅ Nenhuma duplicata encontrada! O banco está limpo.")
+            else:
+                st.error(f"⚠️ {len(df_multi)} código(s) com descrições conflitantes encontrado(s):")
+
+                for _, row_dup in df_multi.iterrows():
+                    codigo_dup = row_dup['Codigo']
+
+                    conn = sqlite3.connect(DB_NAME)
+                    df_versoes = pd.read_sql_query("""
+                        SELECT Descricao, CC, Quantidade
+                        FROM estoque
+                        WHERE Codigo = ?
+                        ORDER BY Descricao, CC
+                    """, conn, params=(codigo_dup,))
+                    conn.close()
+
+                    descricoes_unicas = df_versoes['Descricao'].unique().tolist()
+
+                    with st.expander(f"🔖 Código: **{codigo_dup}** — {len(descricoes_unicas)} descrições diferentes"):
+                        st.dataframe(df_versoes, use_container_width=True, hide_index=True)
+
+                        st.markdown("**Escolha a descrição CORRETA para manter:**")
+                        desc_correta = st.radio(
+                            f"Descrição correta para {codigo_dup}:",
+                            options=descricoes_unicas,
+                            key=f"radio_{codigo_dup}"
+                        )
+
+                        col_a, col_b = st.columns(2)
+
+                        with col_a:
+                            label_unif = f"✅ Unificar — manter '{desc_correta[:28]}...'" if len(desc_correta) > 30 else f"✅ Unificar — manter '{desc_correta}'"
+                            if st.button(label_unif, key=f"unificar_{codigo_dup}"):
+                                conn = sqlite3.connect(DB_NAME)
+                                cur = conn.cursor()
+
+                                # Soma quantidades por CC independente da descrição
+                                cur.execute("""
+                                    SELECT CC, SUM(Quantidade) as total
+                                    FROM estoque
+                                    WHERE Codigo = ?
+                                    GROUP BY CC
+                                """, (codigo_dup,))
+                                totais_por_cc = cur.fetchall()
+
+                                # Remove tudo e reinserelinha com descrição correta
+                                cur.execute("DELETE FROM estoque WHERE Codigo=?", (codigo_dup,))
+                                for cc_v, qtd_v in totais_por_cc:
+                                    cur.execute(
+                                        "INSERT INTO estoque VALUES (?,?,?,?)",
+                                        (codigo_dup, desc_correta, qtd_v, cc_v)
+                                    )
+
+                                conn.commit()
+                                conn.close()
+                                st.success(f"✅ Código {codigo_dup} unificado. Quantidades somadas por setor.")
+                                st.rerun()
+
+                        with col_b:
+                            if st.button("🗑️ Excluir registros com descrição errada", key=f"excluir_{codigo_dup}"):
+                                conn = sqlite3.connect(DB_NAME)
+                                cur = conn.cursor()
+                                cur.execute(
+                                    "DELETE FROM estoque WHERE Codigo=? AND Descricao!=?",
+                                    (codigo_dup, desc_correta)
+                                )
+                                removidos = cur.rowcount
+                                conn.commit()
+                                conn.close()
+                                st.success(f"🗑️ {removidos} registro(s) removido(s). Mantida: '{desc_correta}'.")
+                                st.rerun()
