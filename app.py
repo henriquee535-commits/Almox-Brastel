@@ -10,6 +10,14 @@ import base64
 # 1. CONFIGURAÇÃO DA PÁGINA
 st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="📦")
 
+# --- CONFIGURAÇÕES ---
+ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
+SENHA_ACESSO = "1234"
+SENHA_ZERAR_ESTOQUE = "admin123" # Senha exclusiva para zerar estoque
+DB_NAME = 'estoque.db'
+LIMITE_PESSOAS = 40
+TEMPO_INATIVIDADE = 1
+
 # --- CSS GLOBAL + RESPONSIVO ---
 st.markdown("""
 <style>
@@ -19,16 +27,17 @@ html, body, [class*="css"] {
     font-family: 'Sora', sans-serif;
 }
 
-/* ── HEADER ── */
+/* ── HEADER ── (Fundo Claro) */
 .header-container {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 20px 40px;
-    background: linear-gradient(135deg, #0f2027 0%, #1a3a4a 60%, #0d3349 100%);
+    background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%);
     border-radius: 16px;
     margin-bottom: 20px;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    border: 1px solid #e2e8f0;
     gap: 16px;
 }
 
@@ -43,8 +52,7 @@ html, body, [class*="css"] {
     height: 52px;
     max-width: 140px;
     object-fit: contain;
-    mix-blend-mode: lighten;
-    filter: brightness(1.15) contrast(1.05);
+    mix-blend-mode: darken; /* Ajuste para fundo claro */
 }
 
 .header-title-block {
@@ -55,7 +63,7 @@ html, body, [class*="css"] {
 .header-title-block h1 {
     font-size: 1.85rem;
     font-weight: 700;
-    color: #ffffff;
+    color: #102a43;
     margin: 0;
     letter-spacing: 0.02em;
     line-height: 1.15;
@@ -64,10 +72,11 @@ html, body, [class*="css"] {
 
 .header-title-block p {
     font-size: 0.78rem;
-    color: #7eb8d4;
+    color: #334e68;
     margin: 5px 0 0 0;
     letter-spacing: 0.22em;
     text-transform: uppercase;
+    font-weight: 600;
 }
 
 .header-right {
@@ -79,9 +88,9 @@ html, body, [class*="css"] {
 }
 
 .header-badge {
-    background: rgba(126,184,212,0.15);
-    border: 1px solid rgba(126,184,212,0.3);
-    color: #7eb8d4;
+    background: rgba(16, 42, 67, 0.1);
+    border: 1px solid rgba(16, 42, 67, 0.2);
+    color: #102a43;
     border-radius: 20px;
     padding: 4px 12px;
     font-size: 0.75rem;
@@ -99,7 +108,7 @@ html, body, [class*="css"] {
 }
 
 .metric-card {
-    background: #f7fafc;
+    background: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 12px;
     padding: 16px 20px;
@@ -145,12 +154,8 @@ html, body, [class*="css"] {
 
 .stAlert { border-radius: 10px; }
 
-/* ══════════════════════════════════════
-   RESPONSIVO — CELULAR (≤ 768px)
-══════════════════════════════════════ */
+/* ── RESPONSIVO CELULAR ── */
 @media (max-width: 768px) {
-
-    /* Header empilha verticalmente */
     .header-container {
         flex-direction: column;
         align-items: center;
@@ -158,77 +163,18 @@ html, body, [class*="css"] {
         gap: 12px;
         text-align: center;
     }
-
-    /* Logos lado a lado no topo */
-    .header-logos-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        width: 100%;
-        gap: 12px;
-    }
-
-    .header-logo-img img {
-        height: 40px;
-        max-width: 110px;
-    }
-
-    .header-title-block {
-        order: 2;
-        padding: 0;
-    }
-
-    .header-title-block h1 {
-        font-size: 1.3rem;
-    }
-
-    .header-title-block p {
-        font-size: 0.7rem;
-        letter-spacing: 0.14em;
-    }
-
-    .header-right {
-        order: 3;
-        align-items: center;
-        flex-direction: row;
-        justify-content: center;
-        gap: 10px;
-        width: 100%;
-    }
-
-    /* Métricas: 1 coluna no celular */
-    .metrics-grid {
-        grid-template-columns: 1fr;
-        gap: 8px;
-    }
-
-    .metric-card {
-        padding: 12px 16px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-    }
-
-    .metric-card .metric-label {
-        margin-bottom: 0;
-        font-size: 0.82rem;
-    }
-
-    .metric-card .metric-value {
-        font-size: 1.4rem;
-    }
-
-    /* Sidebar fecha por padrão no mobile — sem ajuste necessário no Streamlit */
+    .header-logo-img img { height: 40px; max-width: 110px; }
+    .header-title-block h1 { font-size: 1.3rem; }
+    .header-title-block p { font-size: 0.7rem; }
+    .header-right { flex-direction: row; justify-content: center; width: 100%; }
+    .metrics-grid { grid-template-columns: 1fr; gap: 8px; }
+    .metric-card { padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; }
+    .metric-card .metric-label { margin-bottom: 0; font-size: 0.82rem; }
+    .metric-card .metric-value { font-size: 1.4rem; }
 }
 </style>
 """, unsafe_allow_html=True)
 
-# --- CONFIGURAÇÕES ---
-ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
-SENHA_ACESSO = "1234"
-DB_NAME = 'estoque.db'
-LIMITE_PESSOAS = 40
-TEMPO_INATIVIDADE = 1
 
 # --- BANCO DE DADOS ---
 def init_db():
@@ -238,6 +184,8 @@ def init_db():
                  (Codigo TEXT, Descricao TEXT, Quantidade REAL, CC TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS acessos
                  (sessao_id TEXT PRIMARY KEY, ultimo_clique TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS centros_custo
+                 (nome TEXT PRIMARY KEY)''')
     conn.commit()
     conn.close()
 
@@ -251,11 +199,27 @@ def carregar_estoque():
 
 @st.cache_data
 def carregar_ccs():
-    try:
-        df_bd = pd.read_excel(ARQUIVO_PLANILHA, sheet_name='BD', engine='openpyxl')
-        return df_bd['Centro de Custo'].dropna().unique().tolist()
-    except:
-        return ["Setor Geral"]
+    conn = sqlite3.connect(DB_NAME)
+    df_cc = pd.read_sql_query("SELECT nome FROM centros_custo ORDER BY nome", conn)
+    lista_cc = df_cc['nome'].tolist()
+    
+    # Se estiver vazio, tenta popular pela planilha na primeira vez
+    if not lista_cc:
+        try:
+            df_bd = pd.read_excel(ARQUIVO_PLANILHA, sheet_name='BD', engine='openpyxl')
+            lista_cc = df_bd['Centro de Custo'].dropna().unique().tolist()
+            c = conn.cursor()
+            for cc in lista_cc:
+                c.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc,))
+            conn.commit()
+        except:
+            lista_cc = ["Setor Geral"]
+            c = conn.cursor()
+            c.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", ("Setor Geral",))
+            conn.commit()
+            
+    conn.close()
+    return lista_cc
 
 def buscar_descricao_por_codigo(cod):
     conn = sqlite3.connect(DB_NAME)
@@ -323,16 +287,17 @@ if menu == "📊 Consulta":
     src1 = logo_para_base64("logo1.png")
     src2 = logo_para_base64("logo2.png")
 
-    LOGO_STYLE = "height:52px;max-width:140px;object-fit:contain;mix-blend-mode:lighten;filter:brightness(1.15) contrast(1.05);"
-    img1 = f'<img src="{src1}" style="{LOGO_STYLE}">' if src1 else '<span style="color:#4a7a94;font-weight:700;">LOGO 1</span>'
-    img2 = f'<img src="{src2}" style="{LOGO_STYLE}">' if src2 else '<span style="color:#4a7a94;font-weight:700;">LOGO 2</span>'
+    LOGO_STYLE = "height:52px;max-width:140px;object-fit:contain;mix-blend-mode:darken;"
+    img1 = f'<img src="{src1}" style="{LOGO_STYLE}">' if src1 else '<span style="color:#102a43;font-weight:700;">LOGO 1</span>'
+    img2 = f'<img src="{src2}" style="{LOGO_STYLE}">' if src2 else '<span style="color:#102a43;font-weight:700;">LOGO 2</span>'
 
-    # Calcula métricas
-    total_pecas   = f"{df['Quantidade'].sum():.0f}" if not df.empty else "0"
-    total_itens   = str(df['Codigo'].nunique())     if not df.empty else "0"
-    total_setores = str(df['CC'].nunique())         if not df.empty else "0"
+    # Retirar itens com estoque zerado para os cálculos e exibição
+    df_ativos = df[df['Quantidade'] > 0]
 
-    # Usa components.html para evitar bug do st.markdown com base64 muito grande
+    total_pecas   = f"{df_ativos['Quantidade'].sum():.0f}" if not df_ativos.empty else "0"
+    total_itens   = str(df_ativos['Codigo'].nunique())     if not df_ativos.empty else "0"
+    total_setores = str(df_ativos['CC'].nunique())         if not df_ativos.empty else "0"
+
     components.html(f"""
     <!DOCTYPE html>
     <html>
@@ -343,56 +308,26 @@ if menu == "📊 Consulta":
       * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Sora', sans-serif; }}
 
       .header-container {{
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 18px 32px;
-        background: linear-gradient(135deg, #0f2027 0%, #1a3a4a 60%, #0d3349 100%);
-        border-radius: 16px;
-        margin-bottom: 16px;
-        box-shadow: 0 4px 24px rgba(0,0,0,0.25);
-        gap: 16px;
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 18px 32px; border-radius: 16px; margin-bottom: 16px;
+        background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; gap: 16px;
       }}
-      .header-logo-img {{
-        display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-      }}
-      .header-logo-img img {{
-        height: 52px; max-width: 140px; object-fit: contain;
-        mix-blend-mode: lighten; filter: brightness(1.15) contrast(1.05);
-      }}
+      .header-logo-img {{ display: flex; align-items: center; justify-content: center; flex-shrink: 0; }}
+      .header-logo-img img {{ height: 52px; max-width: 140px; object-fit: contain; mix-blend-mode: darken; }}
       .header-title-block {{ text-align: center; flex: 1; padding: 0 16px; }}
-      .header-title-block h1 {{
-        font-size: 1.8rem; font-weight: 700; color: #fff;
-        letter-spacing: 0.02em; text-transform: uppercase; line-height: 1.15;
-      }}
-      .header-title-block p {{
-        font-size: 0.75rem; color: #7eb8d4; margin-top: 5px;
-        letter-spacing: 0.22em; text-transform: uppercase;
-      }}
-      .header-right {{
-        display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0;
-      }}
-      .header-badge {{
-        background: rgba(126,184,212,0.15); border: 1px solid rgba(126,184,212,0.3);
-        color: #7eb8d4; border-radius: 20px; padding: 4px 12px;
-        font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em; white-space: nowrap;
-      }}
+      .header-title-block h1 {{ font-size: 1.8rem; font-weight: 700; color: #102a43; letter-spacing: 0.02em; text-transform: uppercase; line-height: 1.15; }}
+      .header-title-block p {{ font-size: 0.75rem; color: #334e68; margin-top: 5px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; }}
+      .header-right {{ display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }}
+      .header-badge {{ background: rgba(16,42,67,0.1); border: 1px solid rgba(16,42,67,0.2); color: #102a43; border-radius: 20px; padding: 4px 12px; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em; white-space: nowrap; }}
 
-      .metrics-grid {{
-        display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4px;
-      }}
-      .metric-card {{
-        background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 12px;
-        padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
-      }}
+      .metrics-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4px; }}
+      .metric-card {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }}
       .metric-label {{ font-size: 0.78rem; color: #718096; font-weight: 600; margin-bottom: 4px; }}
       .metric-value {{ font-size: 1.9rem; font-weight: 700; color: #1a202c; line-height: 1.1; }}
 
-      /* ── MOBILE ── */
       @media (max-width: 640px) {{
-        .header-container {{
-          flex-direction: column; padding: 14px 16px; gap: 10px; text-align: center;
-        }}
+        .header-container {{ flex-direction: column; padding: 14px 16px; gap: 10px; text-align: center; }}
         .header-logo-img img {{ height: 38px; max-width: 110px; }}
         .header-title-block h1 {{ font-size: 1.2rem; }}
         .header-title-block p  {{ font-size: 0.68rem; letter-spacing: 0.14em; }}
@@ -440,14 +375,13 @@ if menu == "📊 Consulta":
     st.divider()
 
     busca = st.text_input("🔍 Pesquisar Código ou Descrição:")
-    df_filt = df.copy()
+    df_filt = df_ativos.copy() # Tabela filtrada já sem itens zerados
     if busca:
-        df_filt = df[
-            df['Codigo'].astype(str).str.contains(busca, case=False) |
-            df['Descricao'].str.contains(busca, case=False, na=False)
+        df_filt = df_filt[
+            df_filt['Codigo'].astype(str).str.contains(busca, case=False) |
+            df_filt['Descricao'].str.contains(busca, case=False, na=False)
         ]
 
-    # Tabela com scroll horizontal no mobile
     st.markdown('<div class="table-wrapper">', unsafe_allow_html=True)
     st.dataframe(df_filt, use_container_width=True, hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -464,8 +398,8 @@ else:
         tab1, tab2, tab3, tab4 = st.tabs([
             "📝 Registro Individual",
             "📤 Carga em Massa",
-            "🧹 Limpeza de Duplicatas",
-            "🗑️ Excluir Itens sem Código"
+            "🏢 Gerenciar Setores",
+            "⚠️ Zerar Estoque"
         ])
 
         # ------------------------------------------
@@ -524,6 +458,7 @@ else:
                                 st.success(f"✅ Item novo cadastrado com {qtd:.0f} unidades.")
                         conn.commit()
                         conn.close()
+                        st.cache_data.clear()
                         st.rerun()
 
         # ------------------------------------------
@@ -569,6 +504,10 @@ else:
                                 desc_r = row['Descricao']
                                 qtd_r  = float(row['Quantidade'])
                                 cc_r   = row['CC']
+                                
+                                # Verifica se o setor CC existe. Se não, cadastra automaticamente.
+                                cur.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc_r,))
+                                
                                 cur.execute("SELECT DISTINCT Descricao FROM estoque WHERE Codigo=?", (cod_r,))
                                 desc_db = cur.fetchone()
                                 if desc_db and desc_db[0].strip() != desc_r.strip():
@@ -593,95 +532,70 @@ else:
                                 st.dataframe(pd.DataFrame(conflitos), use_container_width=True, hide_index=True)
                             if ignorados:
                                 st.info(f"ℹ️ {len(ignorados)} linha(s) com quantidade inválida ignorada(s).")
+                            st.cache_data.clear()
                             st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao processar arquivo: {e}")
 
         # ------------------------------------------
-        # TAB 3: LIMPEZA DE DUPLICATAS
+        # TAB 3: GERENCIAR SETORES (C.C.)
         # ------------------------------------------
         with tab3:
-            st.subheader("🧹 Limpeza de Códigos com Descrições Duplicadas")
-            st.warning(
-                "Lista todos os códigos com **mais de uma descrição diferente**. "
-                "Escolha qual manter — os registros serão unificados ou os incorretos removidos."
-            )
-            conn = sqlite3.connect(DB_NAME)
-            df_multi = pd.read_sql_query("""
-                SELECT Codigo, COUNT(DISTINCT Descricao) as qtd_desc
-                FROM estoque GROUP BY Codigo HAVING qtd_desc > 1
-            """, conn)
-            conn.close()
+            col_cc1, col_cc2 = st.columns(2)
+            
+            with col_cc1:
+                st.subheader("➕ Cadastrar Novo Setor")
+                novo_cc = st.text_input("Nome do novo Centro de Custo:")
+                if st.button("Cadastrar Setor"):
+                    if novo_cc:
+                        conn = sqlite3.connect(DB_NAME)
+                        conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (novo_cc,))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Setor '{novo_cc}' cadastrado com sucesso!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.warning("Preencha o nome do setor.")
 
-            if df_multi.empty:
-                st.success("✅ Nenhuma duplicata encontrada! O banco está limpo.")
-            else:
-                st.error(f"⚠️ {len(df_multi)} código(s) com descrições conflitantes:")
-                for _, row_dup in df_multi.iterrows():
-                    codigo_dup = row_dup['Codigo']
-                    conn = sqlite3.connect(DB_NAME)
-                    df_versoes = pd.read_sql_query(
-                        "SELECT Descricao, CC, Quantidade FROM estoque WHERE Codigo=? ORDER BY Descricao, CC",
-                        conn, params=(codigo_dup,))
-                    conn.close()
-                    descricoes_unicas = df_versoes['Descricao'].unique().tolist()
-                    with st.expander(f"🔖 Código: **{codigo_dup}** — {len(descricoes_unicas)} descrições"):
-                        st.dataframe(df_versoes, use_container_width=True, hide_index=True)
-                        desc_correta = st.radio(
-                            "Descrição correta para manter:", options=descricoes_unicas,
-                            key=f"radio_{codigo_dup}")
-                        col_a, col_b = st.columns(2)
-                        with col_a:
-                            label = f"✅ Unificar — '{desc_correta[:28]}...'" if len(desc_correta) > 30 else f"✅ Unificar — '{desc_correta}'"
-                            if st.button(label, key=f"unificar_{codigo_dup}"):
-                                conn = sqlite3.connect(DB_NAME); cur = conn.cursor()
-                                cur.execute("SELECT CC, SUM(Quantidade) FROM estoque WHERE Codigo=? GROUP BY CC", (codigo_dup,))
-                                totais = cur.fetchall()
-                                cur.execute("DELETE FROM estoque WHERE Codigo=?", (codigo_dup,))
-                                for cc_v, qtd_v in totais:
-                                    cur.execute("INSERT INTO estoque VALUES (?,?,?,?)", (codigo_dup, desc_correta, qtd_v, cc_v))
-                                conn.commit(); conn.close()
-                                st.success(f"✅ Unificado com '{desc_correta}'.")
-                                st.rerun()
-                        with col_b:
-                            if st.button("🗑️ Excluir registros com descrição errada", key=f"excluir_{codigo_dup}"):
-                                conn = sqlite3.connect(DB_NAME); cur = conn.cursor()
-                                cur.execute("DELETE FROM estoque WHERE Codigo=? AND Descricao!=?", (codigo_dup, desc_correta))
-                                removidos = cur.rowcount
-                                conn.commit(); conn.close()
-                                st.success(f"🗑️ {removidos} registro(s) removido(s).")
-                                st.rerun()
+            with col_cc2:
+                st.subheader("🔄 Renomear Setor (De/Para)")
+                cc_antigo = st.selectbox("Setor Atual (De):", lista_cc)
+                cc_novo = st.text_input("Novo Nome (Para):")
+                if st.button("Renomear Setor"):
+                    if cc_novo and cc_antigo:
+                        conn = sqlite3.connect(DB_NAME)
+                        # Insere o novo nome
+                        conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc_novo,))
+                        # Atualiza todo o estoque para o novo CC
+                        conn.execute("UPDATE estoque SET CC = ? WHERE CC = ?", (cc_novo, cc_antigo))
+                        # Deleta o CC antigo
+                        conn.execute("DELETE FROM centros_custo WHERE nome = ?", (cc_antigo,))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Setor renomeado de '{cc_antigo}' para '{cc_novo}'!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.warning("Preencha o novo nome do setor.")
 
         # ------------------------------------------
-        # TAB 4: EXCLUIR ITENS SEM CÓDIGO
+        # TAB 4: ZERAR ESTOQUE
         # ------------------------------------------
         with tab4:
-            st.subheader("🗑️ Excluir Itens Cadastrados sem Código")
-            st.warning(
-                "Registros onde o campo **Código está vazio ou em branco**, "
-                "lançados antes da validação ser ativada."
-            )
-            conn = sqlite3.connect(DB_NAME)
-            df_sem_cod = pd.read_sql_query("""
-                SELECT rowid, Codigo, Descricao, Quantidade, CC FROM estoque
-                WHERE TRIM(COALESCE(Codigo, '')) = '' OR LOWER(TRIM(Codigo)) = 'nan'
-            """, conn)
-            conn.close()
-
-            if df_sem_cod.empty:
-                st.success("✅ Nenhum item sem código encontrado.")
-            else:
-                st.error(f"⚠️ {len(df_sem_cod)} registro(s) sem código encontrado(s):")
-                st.dataframe(df_sem_cod.drop(columns=['rowid']), use_container_width=True, hide_index=True)
-                col_exc1, col_exc2 = st.columns([1, 3])
-                with col_exc1:
-                    if st.button("🗑️ Excluir TODOS os itens sem código", type="primary"):
-                        conn = sqlite3.connect(DB_NAME); cur = conn.cursor()
-                        cur.execute("""DELETE FROM estoque
-                            WHERE TRIM(COALESCE(Codigo, '')) = '' OR LOWER(TRIM(Codigo)) = 'nan'""")
-                        removidos = cur.rowcount
-                        conn.commit(); conn.close()
-                        st.success(f"✅ {removidos} registro(s) excluído(s).")
-                        st.rerun()
-                with col_exc2:
-                    st.caption("⚠️ Ação irreversível. Confira a tabela antes de confirmar.")
+            st.subheader("⚠️ Zerar Todo o Estoque")
+            st.warning("Esta ação irá definir a quantidade de **todos os itens** do sistema para zero. Essa ação não pode ser desfeita.")
+            
+            senha_zerar = st.text_input("Senha Master para Zerar Estoque:", type="password")
+            
+            if st.button("🚨 Confirmar Zeramento Total"):
+                if senha_zerar == SENHA_ZERAR_ESTOQUE:
+                    conn = sqlite3.connect(DB_NAME)
+                    conn.execute("UPDATE estoque SET Quantidade = 0")
+                    conn.commit()
+                    conn.close()
+                    st.success("Estoque de todos os itens foi zerado com sucesso!")
+                    st.cache_data.clear()
+                    st.rerun()
+                elif senha_zerar:
+                    st.error("Senha master incorreta!")
