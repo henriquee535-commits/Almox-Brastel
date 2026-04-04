@@ -2,19 +2,25 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
+import uuid
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Almoxarifado", layout="wide", page_icon="📦")
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm' 
-SENHA_ACESSO = "Almoxarifado123" 
+SENHA_ACESSO = "1234" 
 DB_NAME = 'estoque.db'
+
+LIMITE_PESSOAS = 40
+TEMPO_INATIVIDADE_MINUTOS = 5
 
 # --- 1. BANCO DE DADOS ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS estoque (Codigo TEXT, Descricao TEXT, Quantidade REAL, CC TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS acessos (sessao_id TEXT PRIMARY KEY, ultimo_clique TIMESTAMP)''')
     conn.commit()
     conn.close()
 
@@ -33,6 +39,32 @@ def carregar_ccs():
     except:
         return ["Erro na planilha"]
 
+# --- CONTROLE DE FILA (CATRACA) ---
+if 'sessao_id' not in st.session_state:
+    st.session_state.sessao_id = str(uuid.uuid4())
+
+conn = sqlite3.connect(DB_NAME)
+c = conn.cursor()
+
+limite_tempo = datetime.now() - timedelta(minutes=TEMPO_INATIVIDADE_MINUTOS)
+c.execute("DELETE FROM acessos WHERE ultimo_clique < ?", (limite_tempo,))
+
+c.execute("INSERT OR REPLACE INTO acessos (sessao_id, ultimo_clique) VALUES (?, ?)", 
+          (st.session_state.sessao_id, datetime.now()))
+conn.commit()
+
+c.execute("SELECT COUNT(*) FROM acessos")
+total_ativos = c.fetchone()[0]
+conn.close()
+
+if total_ativos > LIMITE_PESSOAS:
+    st.warning(f"⚠️ O sistema está lotado no momento ({total_ativos}/{LIMITE_PESSOAS} usuários).")
+    st.info("Por favor, aguarde alguns minutos e tente novamente.")
+    if st.button("🔄 Tentar Novamente"):
+        st.rerun()
+    st.stop()
+
+# --- CARREGAMENTO DE DADOS ---
 lista_cc = carregar_ccs()
 df = carregar_estoque()
 
@@ -53,10 +85,11 @@ if menu == "📊 Consulta (Público)":
     
     st.divider()
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("📦 Peças em Estoque", df['Quantidade'].sum() if not df.empty else 0)
     col2.metric("🏷️ Itens Cadastrados", df['Codigo'].nunique() if not df.empty else 0)
     col3.metric("🏢 Setores", df['CC'].nunique() if not df.empty else 0)
+    col4.metric("👁️ Pessoas Online", f"{total_ativos} / {LIMITE_PESSOAS}")
     
     st.divider()
     
@@ -130,7 +163,6 @@ elif menu == "🔒 Almoxarifado (Restrito)":
 
         st.divider()
         
-        # --- NOVA FUNÇÃO: IMPORTAÇÃO EM MASSA ---
         with st.expander("📥 Importar Inventário em Massa (Excel/CSV)"):
             st.info("Sua planilha deve conter as colunas: **Codigo**, **Descricao**, **Quantidade** e **CC**.")
             arquivo = st.file_uploader("Selecione a planilha", type=["xlsx", "csv"])
@@ -147,8 +179,6 @@ elif menu == "🔒 Almoxarifado (Restrito)":
                         if all(col in df_import.columns for col in colunas_req):
                             conn = sqlite3.connect(DB_NAME)
                             c = conn.cursor()
-                            
-                            # Limpa os códigos (remove .0 se houver)
                             df_import['Codigo'] = df_import['Codigo'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
                             
                             for index, row in df_import.iterrows():
@@ -161,10 +191,8 @@ elif menu == "🔒 Almoxarifado (Restrito)":
                                 res = c.fetchone()
                                 
                                 if res:
-                                    # Se existir, soma a quantidade (Entrada)
                                     c.execute("UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?", (res[0] + qtd_imp, cod_imp, cc_imp))
                                 else:
-                                    # Se não existir, insere novo
                                     c.execute("INSERT INTO estoque (Codigo, Descricao, Quantidade, CC) VALUES (?, ?, ?, ?)", (cod_imp, desc_imp, qtd_imp, cc_imp))
                                     
                             conn.commit()
@@ -176,7 +204,6 @@ elif menu == "🔒 Almoxarifado (Restrito)":
                     except Exception as e:
                         st.error(f"Erro ao ler o arquivo: {e}")
 
-        # --- EXCLUIR REGISTRO ---
         with st.expander("🗑️ Excluir ou Corrigir um Registro"):
             st.warning("Atenção: Isso apagará o item do setor selecionado.")
             with st.form("form_excluir"):
