@@ -13,7 +13,7 @@ st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="�
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
 SENHA_ACESSO = "1234"
-SENHA_ZERAR_ESTOQUE = "admin123" # Senha exclusiva para zerar estoque
+SENHA_ZERAR_ESTOQUE = "admin123"
 DB_NAME = 'estoque.db'
 LIMITE_PESSOAS = 40
 TEMPO_INATIVIDADE = 1
@@ -27,154 +27,20 @@ html, body, [class*="css"] {
     font-family: 'Sora', sans-serif;
 }
 
-/* ── HEADER ── (Fundo Claro) */
-.header-container {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 20px 40px;
-    background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%);
-    border-radius: 16px;
-    margin-bottom: 20px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-    border: 1px solid #e2e8f0;
-    gap: 16px;
-}
+/* Ocultar barra superior do Streamlit para visual mais limpo */
+header {visibility: hidden;}
 
-.header-logo-img {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
-
-.header-logo-img img {
-    height: 52px;
-    max-width: 140px;
-    object-fit: contain;
-    mix-blend-mode: darken; /* Ajuste para fundo claro */
-}
-
-.header-title-block {
-    text-align: center;
-    flex: 1;
-}
-
-.header-title-block h1 {
-    font-size: 1.85rem;
-    font-weight: 700;
-    color: #102a43;
-    margin: 0;
-    letter-spacing: 0.02em;
-    line-height: 1.15;
-    text-transform: uppercase;
-}
-
-.header-title-block p {
-    font-size: 0.78rem;
-    color: #334e68;
-    margin: 5px 0 0 0;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    font-weight: 600;
-}
-
-.header-right {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 8px;
-    flex-shrink: 0;
-}
-
-.header-badge {
-    background: rgba(16, 42, 67, 0.1);
-    border: 1px solid rgba(16, 42, 67, 0.2);
-    color: #102a43;
-    border-radius: 20px;
-    padding: 4px 12px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    white-space: nowrap;
-}
-
-/* ── MÉTRICAS ── */
-.metrics-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    margin-bottom: 20px;
-}
-
-.metric-card {
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    padding: 16px 20px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
-}
-
-.metric-card .metric-label {
-    font-size: 0.78rem;
-    color: #718096;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    margin-bottom: 4px;
-}
-
-.metric-card .metric-value {
-    font-size: 1.9rem;
-    font-weight: 700;
-    color: #1a202c;
-    line-height: 1.1;
-}
-
-/* ── TABELA RESPONSIVA ── */
-.table-wrapper {
-    width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    border-radius: 10px;
-    border: 1px solid #e2e8f0;
-}
-
-/* ── BOTÕES ── */
+/* Botões e Alertas */
 .stButton > button {
     background: linear-gradient(135deg, #1a3a4a, #0d5c8a);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    font-family: 'Sora', sans-serif;
-    font-weight: 600;
-    padding: 0.5rem 1.5rem;
-    transition: opacity 0.2s;
+    color: white; border: none; border-radius: 8px;
+    font-family: 'Sora', sans-serif; font-weight: 600;
+    padding: 0.5rem 1.5rem; transition: opacity 0.2s;
 }
 .stButton > button:hover { opacity: 0.88; color: white; }
-
 .stAlert { border-radius: 10px; }
-
-/* ── RESPONSIVO CELULAR ── */
-@media (max-width: 768px) {
-    .header-container {
-        flex-direction: column;
-        align-items: center;
-        padding: 16px 20px;
-        gap: 12px;
-        text-align: center;
-    }
-    .header-logo-img img { height: 40px; max-width: 110px; }
-    .header-title-block h1 { font-size: 1.3rem; }
-    .header-title-block p { font-size: 0.7rem; }
-    .header-right { flex-direction: row; justify-content: center; width: 100%; }
-    .metrics-grid { grid-template-columns: 1fr; gap: 8px; }
-    .metric-card { padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; }
-    .metric-card .metric-label { margin-bottom: 0; font-size: 0.82rem; }
-    .metric-card .metric-value { font-size: 1.4rem; }
-}
 </style>
 """, unsafe_allow_html=True)
-
 
 # --- BANCO DE DADOS ---
 def init_db():
@@ -203,7 +69,6 @@ def carregar_ccs():
     df_cc = pd.read_sql_query("SELECT nome FROM centros_custo ORDER BY nome", conn)
     lista_cc = df_cc['nome'].tolist()
     
-    # Se estiver vazio, tenta popular pela planilha na primeira vez
     if not lista_cc:
         try:
             df_bd = pd.read_excel(ARQUIVO_PLANILHA, sheet_name='BD', engine='openpyxl')
@@ -241,6 +106,13 @@ def gerar_template_xlsx():
         template_df.to_excel(writer, index=False, sheet_name='Inventario')
     return buf.getvalue()
 
+def gerar_template_depara():
+    df = pd.DataFrame({'De': ['Setor Antigo 1', 'Setor Antigo 2'], 'Para': ['Setor Novo 1', 'Setor Novo 2']})
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='DePara')
+    return buf.getvalue()
+
 def logo_para_base64(path):
     for tentativa in [path, path.replace('.png', '.jpg'), path.replace('.png', '.jpeg')]:
         try:
@@ -261,8 +133,7 @@ conn = sqlite3.connect(DB_NAME)
 c = conn.cursor()
 tempo_limite = datetime.now() - timedelta(minutes=TEMPO_INATIVIDADE)
 c.execute("DELETE FROM acessos WHERE ultimo_clique < ?", (tempo_limite,))
-c.execute("INSERT OR REPLACE INTO acessos VALUES (?, ?)",
-          (st.session_state.sessao_id, datetime.now()))
+c.execute("INSERT OR REPLACE INTO acessos VALUES (?, ?)", (st.session_state.sessao_id, datetime.now()))
 conn.commit()
 c.execute("SELECT COUNT(*) FROM acessos")
 total_ativos = c.fetchone()[0]
@@ -287,11 +158,9 @@ if menu == "📊 Consulta":
     src1 = logo_para_base64("logo1.png")
     src2 = logo_para_base64("logo2.png")
 
-    LOGO_STYLE = "height:52px;max-width:140px;object-fit:contain;mix-blend-mode:darken;"
-    img1 = f'<img src="{src1}" style="{LOGO_STYLE}">' if src1 else '<span style="color:#102a43;font-weight:700;">LOGO 1</span>'
-    img2 = f'<img src="{src2}" style="{LOGO_STYLE}">' if src2 else '<span style="color:#102a43;font-weight:700;">LOGO 2</span>'
+    img1 = f'<img class="logo1-img" src="{src1}">' if src1 else '<span style="color:#102a43;font-weight:700;">LOGO 1</span>'
+    img2 = f'<img class="logo2-img" src="{src2}">' if src2 else '<span style="color:#102a43;font-weight:700;">LOGO 2</span>'
 
-    # Retirar itens com estoque zerado para os cálculos e exibição
     df_ativos = df[df['Quantidade'] > 0]
 
     total_pecas   = f"{df_ativos['Quantidade'].sum():.0f}" if not df_ativos.empty else "0"
@@ -313,12 +182,25 @@ if menu == "📊 Consulta":
         background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%);
         box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; gap: 16px;
       }}
-      .header-logo-img {{ display: flex; align-items: center; justify-content: center; flex-shrink: 0; }}
-      .header-logo-img img {{ height: 52px; max-width: 140px; object-fit: contain; mix-blend-mode: darken; }}
+      
+      /* Travando as larguras laterais para garantir simetria e o título centralizado */
+      .header-logo-left {{
+        display: flex; align-items: center; justify-content: flex-start;
+        flex: 0 0 160px;
+      }}
+      .header-right {{
+        display: flex; flex-direction: column; align-items: flex-end; justify-content: center;
+        gap: 8px; flex: 0 0 160px;
+      }}
+
+      /* Ajuste individual das logos para equilíbrio visual */
+      .logo1-img {{ height: 60px; max-width: 160px; object-fit: contain; mix-blend-mode: darken; }}
+      .logo2-img {{ height: 42px; max-width: 140px; object-fit: contain; mix-blend-mode: darken; }}
+
       .header-title-block {{ text-align: center; flex: 1; padding: 0 16px; }}
       .header-title-block h1 {{ font-size: 1.8rem; font-weight: 700; color: #102a43; letter-spacing: 0.02em; text-transform: uppercase; line-height: 1.15; }}
       .header-title-block p {{ font-size: 0.75rem; color: #334e68; margin-top: 5px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; }}
-      .header-right {{ display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }}
+      
       .header-badge {{ background: rgba(16,42,67,0.1); border: 1px solid rgba(16,42,67,0.2); color: #102a43; border-radius: 20px; padding: 4px 12px; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em; white-space: nowrap; }}
 
       .metrics-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4px; }}
@@ -328,10 +210,8 @@ if menu == "📊 Consulta":
 
       @media (max-width: 640px) {{
         .header-container {{ flex-direction: column; padding: 14px 16px; gap: 10px; text-align: center; }}
-        .header-logo-img img {{ height: 38px; max-width: 110px; }}
+        .header-logo-left, .header-right {{ flex: auto; align-items: center; justify-content: center; width: 100%; flex-direction: row; }}
         .header-title-block h1 {{ font-size: 1.2rem; }}
-        .header-title-block p  {{ font-size: 0.68rem; letter-spacing: 0.14em; }}
-        .header-right {{ align-items: center; flex-direction: row; justify-content: center; width: 100%; }}
         .metrics-grid {{ grid-template-columns: 1fr; gap: 8px; }}
         .metric-card  {{ padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; }}
         .metric-label {{ margin-bottom: 0; font-size: 0.82rem; }}
@@ -342,13 +222,13 @@ if menu == "📊 Consulta":
     <body>
 
     <div class="header-container">
-      <div class="header-logo-img">{img1}</div>
+      <div class="header-logo-left">{img1}</div>
       <div class="header-title-block">
         <h1>Inventário Brastel</h1>
         <p>Almoxarifado</p>
       </div>
       <div class="header-right">
-        <div class="header-logo-img">{img2}</div>
+        {img2}
         <span class="header-badge">🟢 {total_ativos}/{LIMITE_PESSOAS} online</span>
       </div>
     </div>
@@ -375,16 +255,14 @@ if menu == "📊 Consulta":
     st.divider()
 
     busca = st.text_input("🔍 Pesquisar Código ou Descrição:")
-    df_filt = df_ativos.copy() # Tabela filtrada já sem itens zerados
+    df_filt = df_ativos.copy() 
     if busca:
         df_filt = df_filt[
             df_filt['Codigo'].astype(str).str.contains(busca, case=False) |
             df_filt['Descricao'].str.contains(busca, case=False, na=False)
         ]
 
-    st.markdown('<div class="table-wrapper">', unsafe_allow_html=True)
     st.dataframe(df_filt, use_container_width=True, hide_index=True)
-    st.markdown('</div>', unsafe_allow_html=True)
 
 # ==========================================
 # TELA 2: ALMOXARIFADO
@@ -399,14 +277,13 @@ else:
             "📝 Registro Individual",
             "📤 Carga em Massa",
             "🏢 Gerenciar Setores",
-            "⚠️ Zerar Estoque"
+            "⚠️ Limpar Dados"
         ])
 
         # ------------------------------------------
         # TAB 1: REGISTRO INDIVIDUAL
         # ------------------------------------------
         with tab1:
-            st.subheader("Registrar Entrada / Saída")
             with st.form("registro"):
                 c1, c2 = st.columns(2)
                 cod        = c1.text_input("Código:")
@@ -417,184 +294,150 @@ else:
                 op     = c4.selectbox("Operação:", ["Entrada", "Saída"])
                 qtd    = c5.number_input("Qtd:", min_value=1.0)
 
-                submitted = st.form_submit_button("✅ Confirmar")
-
-            if submitted:
-                if not cod:
-                    st.error("⛔ Informe o Código do item.")
-                else:
-                    desc_existente = buscar_descricao_por_codigo(cod)
-                    if desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
-                        st.error(
-                            f"⛔ Conflito de Descrição!\n\n"
-                            f"O código **{cod}** já está cadastrado com:\n\n"
-                            f"**\"{desc_existente}\"**\n\n"
-                            f"Deixe 'Descrição' em branco para usar a existente, ou corrija o código."
-                        )
+                if st.form_submit_button("✅ Confirmar"):
+                    if not cod:
+                        st.error("⛔ Informe o Código do item.")
                     else:
-                        desc_final = desc_existente if desc_existente else desc_input
-                        conn = sqlite3.connect(DB_NAME)
-                        cur  = conn.cursor()
-                        cur.execute(
-                            "SELECT Quantidade FROM estoque WHERE Codigo=? AND CC=?",
-                            (cod, cc_sel)
-                        )
-                        res = cur.fetchone()
-                        if res:
-                            novo = (res[0] + qtd) if op == "Entrada" else max(0, res[0] - qtd)
-                            cur.execute(
-                                "UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?",
-                                (novo, cod, cc_sel)
-                            )
-                            st.success(f"✅ {op} de {qtd:.0f} unidades registrada. Saldo: {novo:.0f}")
+                        desc_existente = buscar_descricao_por_codigo(cod)
+                        if desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
+                            st.error(f"⛔ Conflito de Descrição! O código **{cod}** já está cadastrado com:\n\n**\"{desc_existente}\"**")
                         else:
-                            if op == "Saída":
-                                st.warning("⚠️ Item não encontrado neste setor. Saída não registrada.")
+                            desc_final = desc_existente if desc_existente else desc_input
+                            conn = sqlite3.connect(DB_NAME)
+                            cur  = conn.cursor()
+                            cur.execute("SELECT Quantidade FROM estoque WHERE Codigo=? AND CC=?", (cod, cc_sel))
+                            res = cur.fetchone()
+                            if res:
+                                novo = (res[0] + qtd) if op == "Entrada" else max(0, res[0] - qtd)
+                                cur.execute("UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?", (novo, cod, cc_sel))
+                                st.success(f"✅ {op} registrada. Saldo atualizado: {novo:.0f}")
                             else:
-                                cur.execute(
-                                    "INSERT INTO estoque VALUES (?,?,?,?)",
-                                    (cod, desc_final, qtd, cc_sel)
-                                )
-                                st.success(f"✅ Item novo cadastrado com {qtd:.0f} unidades.")
-                        conn.commit()
-                        conn.close()
-                        st.cache_data.clear()
-                        st.rerun()
+                                if op == "Saída":
+                                    st.warning("⚠️ Item não encontrado neste setor.")
+                                else:
+                                    cur.execute("INSERT INTO estoque VALUES (?,?,?,?)", (cod, desc_final, qtd, cc_sel))
+                                    st.success("✅ Item novo cadastrado.")
+                            conn.commit()
+                            conn.close()
+                            st.cache_data.clear()
+                            st.rerun()
 
         # ------------------------------------------
         # TAB 2: CARGA EM MASSA
         # ------------------------------------------
         with tab2:
-            st.subheader("📤 Importar Inventário em Massa")
-            st.info(
-                "Faça upload de um arquivo **Excel (.xlsx)** com as colunas:\n\n"
-                "`Codigo` | `Descricao` | `Quantidade` | `CC`\n\n"
-                "• A operação padrão é **Entrada** (soma ao estoque existente).\n"
-                "• Se o código já existir com descrição diferente, a linha será **ignorada** e reportada."
-            )
-            st.download_button(
-                "⬇️ Baixar Template XLSX",
-                data=gerar_template_xlsx(),
-                file_name="template_inventario.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            arquivo = st.file_uploader("Selecione o arquivo Excel (.xlsx):", type=["xlsx"], key="upload_massa")
+            st.info("Upload de arquivo Excel (.xlsx) com colunas: `Codigo` | `Descricao` | `Quantidade` | `CC`")
+            st.download_button("⬇️ Template Inventário", gerar_template_xlsx(), "template_inventario.xlsx")
+            arquivo = st.file_uploader("Arquivo de Inventário (.xlsx):", type=["xlsx"], key="upload_massa")
 
             if arquivo:
                 try:
                     df_upload = pd.read_excel(arquivo, engine='openpyxl')
-                    colunas_necessarias = {'Codigo', 'Descricao', 'Quantidade', 'CC'}
-                    colunas_faltando = colunas_necessarias - set(df_upload.columns)
-                    if colunas_faltando:
-                        st.error(f"⛔ Colunas ausentes: {', '.join(colunas_faltando)}")
+                    faltando = {'Codigo', 'Descricao', 'Quantidade', 'CC'} - set(df_upload.columns)
+                    if faltando:
+                        st.error(f"⛔ Colunas ausentes: {', '.join(faltando)}")
                     else:
-                        df_upload['Codigo']     = df_upload['Codigo'].astype(str).str.strip()
-                        df_upload['Descricao']  = df_upload['Descricao'].astype(str).str.strip()
-                        df_upload['CC']         = df_upload['CC'].astype(str).str.strip()
-                        df_upload['Quantidade'] = pd.to_numeric(df_upload['Quantidade'], errors='coerce').fillna(0)
-                        st.write(f"**{len(df_upload)} linhas encontradas.** Pré-visualização:")
-                        st.dataframe(df_upload.head(10), use_container_width=True, hide_index=True)
-
                         if st.button("🚀 Processar Importação"):
                             conn = sqlite3.connect(DB_NAME)
                             cur  = conn.cursor()
-                            ok, conflitos, ignorados = 0, [], []
                             for _, row in df_upload.iterrows():
-                                cod_r  = row['Codigo']
-                                desc_r = row['Descricao']
-                                qtd_r  = float(row['Quantidade'])
-                                cc_r   = row['CC']
+                                cod_r, desc_r, cc_r = str(row['Codigo']).strip(), str(row['Descricao']).strip(), str(row['CC']).strip()
+                                qtd_r = pd.to_numeric(row['Quantidade'], errors='coerce')
+                                if pd.isna(qtd_r) or qtd_r <= 0: continue
                                 
-                                # Verifica se o setor CC existe. Se não, cadastra automaticamente.
                                 cur.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc_r,))
-                                
-                                cur.execute("SELECT DISTINCT Descricao FROM estoque WHERE Codigo=?", (cod_r,))
-                                desc_db = cur.fetchone()
-                                if desc_db and desc_db[0].strip() != desc_r.strip():
-                                    conflitos.append({'Codigo': cod_r, 'Desc no Arquivo': desc_r, 'Desc no Sistema': desc_db[0]})
-                                    continue
-                                if qtd_r <= 0:
-                                    ignorados.append(cod_r)
-                                    continue
                                 cur.execute("SELECT Quantidade FROM estoque WHERE Codigo=? AND CC=?", (cod_r, cc_r))
                                 res = cur.fetchone()
                                 if res:
-                                    cur.execute("UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?",
-                                                (res[0] + qtd_r, cod_r, cc_r))
+                                    cur.execute("UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?", (res[0] + qtd_r, cod_r, cc_r))
                                 else:
                                     cur.execute("INSERT INTO estoque VALUES (?,?,?,?)", (cod_r, desc_r, qtd_r, cc_r))
-                                ok += 1
                             conn.commit()
                             conn.close()
-                            st.success(f"✅ **{ok} itens** importados com sucesso!")
-                            if conflitos:
-                                st.warning(f"⚠️ {len(conflitos)} linha(s) ignorada(s) por conflito:")
-                                st.dataframe(pd.DataFrame(conflitos), use_container_width=True, hide_index=True)
-                            if ignorados:
-                                st.info(f"ℹ️ {len(ignorados)} linha(s) com quantidade inválida ignorada(s).")
+                            st.success("✅ Importação concluída!")
                             st.cache_data.clear()
                             st.rerun()
                 except Exception as e:
-                    st.error(f"Erro ao processar arquivo: {e}")
+                    st.error(f"Erro: {e}")
 
         # ------------------------------------------
-        # TAB 3: GERENCIAR SETORES (C.C.)
+        # TAB 3: GERENCIAR SETORES E DE/PARA
         # ------------------------------------------
         with tab3:
-            col_cc1, col_cc2 = st.columns(2)
+            c_sec1, c_sec2 = st.columns(2)
             
-            with col_cc1:
-                st.subheader("➕ Cadastrar Novo Setor")
-                novo_cc = st.text_input("Nome do novo Centro de Custo:")
-                if st.button("Cadastrar Setor"):
+            with c_sec1:
+                st.subheader("➕ Novo Setor")
+                novo_cc = st.text_input("Nome:")
+                if st.button("Cadastrar"):
                     if novo_cc:
                         conn = sqlite3.connect(DB_NAME)
                         conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (novo_cc,))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Setor '{novo_cc}' cadastrado com sucesso!")
+                        conn.commit(); conn.close()
+                        st.success("Setor cadastrado!")
                         st.cache_data.clear()
                         st.rerun()
-                    else:
-                        st.warning("Preencha o nome do setor.")
-
-            with col_cc2:
-                st.subheader("🔄 Renomear Setor (De/Para)")
-                cc_antigo = st.selectbox("Setor Atual (De):", lista_cc)
-                cc_novo = st.text_input("Novo Nome (Para):")
-                if st.button("Renomear Setor"):
+            
+            with c_sec2:
+                st.subheader("🔄 De/Para (Individual)")
+                cc_antigo = st.selectbox("De:", lista_cc)
+                cc_novo = st.text_input("Para (Novo Nome):")
+                if st.button("Renomear Único"):
                     if cc_novo and cc_antigo:
                         conn = sqlite3.connect(DB_NAME)
-                        # Insere o novo nome
                         conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc_novo,))
-                        # Atualiza todo o estoque para o novo CC
                         conn.execute("UPDATE estoque SET CC = ? WHERE CC = ?", (cc_novo, cc_antigo))
-                        # Deleta o CC antigo
                         conn.execute("DELETE FROM centros_custo WHERE nome = ?", (cc_antigo,))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Setor renomeado de '{cc_antigo}' para '{cc_novo}'!")
+                        conn.commit(); conn.close()
+                        st.success("Setor renomeado!")
                         st.cache_data.clear()
                         st.rerun()
-                    else:
-                        st.warning("Preencha o novo nome do setor.")
+
+            st.divider()
+            st.subheader("📂 De/Para em Massa")
+            st.info("Suba uma planilha com as colunas **De** (Nome atual) e **Para** (Novo nome).")
+            st.download_button("⬇️ Template De/Para", gerar_template_depara(), "template_depara.xlsx")
+            arq_depara = st.file_uploader("Arquivo De/Para (.xlsx):", type=["xlsx"])
+            
+            if arq_depara and st.button("🚀 Processar De/Para em Massa"):
+                df_dp = pd.read_excel(arq_depara)
+                if 'De' in df_dp.columns and 'Para' in df_dp.columns:
+                    conn = sqlite3.connect(DB_NAME)
+                    for _, row in df_dp.iterrows():
+                        de, para = str(row['De']).strip(), str(row['Para']).strip()
+                        if de != 'nan' and para != 'nan':
+                            conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (para,))
+                            conn.execute("UPDATE estoque SET CC = ? WHERE CC = ?", (para, de))
+                            conn.execute("DELETE FROM centros_custo WHERE nome = ?", (de,))
+                    conn.commit(); conn.close()
+                    st.success("De/Para em massa concluído!")
+                    st.cache_data.clear()
+                    st.rerun()
 
         # ------------------------------------------
-        # TAB 4: ZERAR ESTOQUE
+        # TAB 4: LIMPAR DADOS
         # ------------------------------------------
         with tab4:
-            st.subheader("⚠️ Zerar Todo o Estoque")
-            st.warning("Esta ação irá definir a quantidade de **todos os itens** do sistema para zero. Essa ação não pode ser desfeita.")
+            st.subheader("⚠️ Área de Risco")
             
-            senha_zerar = st.text_input("Senha Master para Zerar Estoque:", type="password")
+            opcao = st.radio("Selecione a ação desejada:", [
+                "1️⃣ Apenas zerar o estoque (Mantém os códigos salvos)", 
+                "2️⃣ Excluir tudo (Limpa o banco de estoque e códigos)"
+            ])
             
-            if st.button("🚨 Confirmar Zeramento Total"):
+            senha_zerar = st.text_input("Senha Master:", type="password")
+            
+            if st.button("🚨 Confirmar Execução"):
                 if senha_zerar == SENHA_ZERAR_ESTOQUE:
                     conn = sqlite3.connect(DB_NAME)
-                    conn.execute("UPDATE estoque SET Quantidade = 0")
+                    if "1️⃣" in opcao:
+                        conn.execute("UPDATE estoque SET Quantidade = 0")
+                        st.success("Quantidades zeradas com sucesso!")
+                    else:
+                        conn.execute("DELETE FROM estoque")
+                        st.success("Todos os itens e códigos foram apagados!")
                     conn.commit()
                     conn.close()
-                    st.success("Estoque de todos os itens foi zerado com sucesso!")
                     st.cache_data.clear()
                     st.rerun()
                 elif senha_zerar:
