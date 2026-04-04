@@ -8,7 +8,7 @@ st.set_page_config(page_title="Almoxarifado", layout="wide", page_icon="📦")
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm' 
 SENHA_ACESSO = "Almoxarifado" 
-DB_NAME = 'estoque.db' # Nosso novo Banco de Dados
+DB_NAME = 'estoque.db'
 
 # --- 1. INICIAR BANCO DE DADOS ---
 def init_db():
@@ -27,7 +27,6 @@ def init_db():
 
 init_db()
 
-# Função para carregar os dados do banco
 def carregar_estoque():
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM estoque", conn)
@@ -114,7 +113,7 @@ elif menu == "Almoxarifado (Restrito)":
         st.success("Acesso liberado.")
         
         codigo = st.text_input("Código do Item:")
-        descricao = st.text_input("Descrição (obrigatório apenas para novos itens):")
+        descricao = st.text_input("Descrição (obrigatório apenas para itens inéditos na empresa):")
         cc = st.selectbox("Centro de Custo (CC):", lista_cc)
         operacao = st.radio("Operação:", ["1 - Entrada (+)", "2 - Saída (-)"])
         qtd = st.number_input("Quantidade:", min_value=1.0, step=1.0)
@@ -126,16 +125,20 @@ elif menu == "Almoxarifado (Restrito)":
                 codigo_limpo = str(codigo).strip()
                 cc_limpo = str(cc).strip()
                 
-                # Conecta ao banco para fazer a operação de forma segura
                 conn = sqlite3.connect(DB_NAME)
                 c = conn.cursor()
                 
-                # Verifica se o item já existe
+                # 1. VERIFICA SE O CÓDIGO JÁ EXISTE NA EMPRESA (Qualquer CC)
+                c.execute("SELECT Descricao FROM estoque WHERE Codigo=? LIMIT 1", (codigo_limpo,))
+                desc_banco = c.fetchone()
+                desc_padrao = desc_banco[0] if desc_banco else None
+                
+                # 2. VERIFICA O SALDO NESTE CC ESPECÍFICO
                 c.execute("SELECT Quantidade FROM estoque WHERE Codigo=? AND CC=?", (codigo_limpo, cc_limpo))
                 resultado = c.fetchone()
                 
                 if resultado: 
-                    # ITEM EXISTE
+                    # ITEM JÁ EXISTE NESTE CC
                     saldo_atual = resultado[0]
                     
                     if operacao == "1 - Entrada (+)":
@@ -150,19 +153,25 @@ elif menu == "Almoxarifado (Restrito)":
                             c.execute("UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?", (novo_saldo, codigo_limpo, cc_limpo))
                             st.success(f"Saída registrada! Novo saldo: {novo_saldo}")
                 else: 
-                    # ITEM NÃO EXISTE
+                    # ITEM NÃO EXISTE NESTE CC AINDA
                     if operacao == "2 - Saída (-)":
                         st.error("Erro: Não há saldo deste item neste setor para realizar saída.")
                     else:
-                        if not descricao:
-                            st.error("Item inédito! Preencha a 'Descrição' para cadastrar.")
-                        else:
+                        # É uma Entrada. Vamos checar a descrição.
+                        if desc_padrao:
+                            # Se a descrição já existe no banco, ignora a digitada e usa a oficial
                             c.execute("INSERT INTO estoque (Codigo, Descricao, Quantidade, CC) VALUES (?, ?, ?, ?)", 
-                                      (codigo_limpo, descricao, qtd, cc_limpo))
-                            st.success(f"Novo registro criado e entrada realizada para {cc}")
+                                      (codigo_limpo, desc_padrao, qtd, cc_limpo))
+                            st.success(f"Nova entrada para o setor {cc_limpo}. Descrição automática utilizada: '{desc_padrao}'.")
+                        else:
+                            # Se é a primeira vez que a empresa vê esse código, exige a descrição
+                            if not descricao:
+                                st.error("Item 100% inédito na empresa! Preencha a 'Descrição' para cadastrar.")
+                            else:
+                                c.execute("INSERT INTO estoque (Codigo, Descricao, Quantidade, CC) VALUES (?, ?, ?, ?)", 
+                                          (codigo_limpo, descricao, qtd, cc_limpo))
+                                st.success(f"Item inédito cadastrado com sucesso para o setor {cc_limpo}!")
                 
                 conn.commit()
                 conn.close()
-                
-                # Recarrega a tela para atualizar os números
                 st.rerun()
