@@ -1,16 +1,40 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
 import os
 
-# Configuração da página (deixa a tela mais larga e limpa)
 st.set_page_config(page_title="Almoxarifado", layout="wide", page_icon="📦")
 
 # --- CONFIGURAÇÕES ---
-ARQUIVO_ESTOQUE = 'estoque.csv'
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm' 
 SENHA_ACESSO = "Almoxarifado" 
+DB_NAME = 'estoque.db' # Nosso novo Banco de Dados
 
-# --- CARREGAR DADOS ---
+# --- 1. INICIAR BANCO DE DADOS ---
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS estoque (
+            Codigo TEXT,
+            Descricao TEXT,
+            Quantidade REAL,
+            CC TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Função para carregar os dados do banco
+def carregar_estoque():
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql_query("SELECT * FROM estoque", conn)
+    conn.close()
+    return df
+
+# --- 2. CARREGAR CENTROS DE CUSTO ---
 @st.cache_data
 def carregar_ccs():
     try:
@@ -20,14 +44,7 @@ def carregar_ccs():
         return [f"Erro ao ler planilha: {e}"]
 
 lista_cc = carregar_ccs()
-
-# Cria o CSV se não existir
-if not os.path.exists(ARQUIVO_ESTOQUE):
-    pd.DataFrame(columns=['Codigo', 'Descricao', 'Quantidade', 'CC']).to_csv(ARQUIVO_ESTOQUE, index=False)
-
-# SOLUÇÃO DO ITEM INÉDITO: Força a leitura do Código sempre como Texto puro e remove casas decimais
-df = pd.read_csv(ARQUIVO_ESTOQUE, dtype={'Codigo': str})
-df['Codigo'] = df['Codigo'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+df = carregar_estoque()
 
 # --- MENU LATERAL ---
 menu = st.sidebar.radio("Navegação:", ["Consulta (Público)", "Almoxarifado (Restrito)"])
@@ -37,7 +54,6 @@ menu = st.sidebar.radio("Navegação:", ["Consulta (Público)", "Almoxarifado (R
 # ==========================================
 if menu == "Consulta (Público)":
     
-    # Cabeçalho com Logo
     col_logo, col_titulo = st.columns([1, 4])
     with col_logo:
         try:
@@ -51,7 +67,6 @@ if menu == "Consulta (Público)":
     
     st.divider()
     
-    # Indicadores visuais
     col1, col2, col3 = st.columns(3)
     col1.metric("📦 Total de Peças", df['Quantidade'].sum() if not df.empty else 0)
     col2.metric("🏷️ Variedade de Itens", df['Codigo'].nunique() if not df.empty else 0)
@@ -59,7 +74,6 @@ if menu == "Consulta (Público)":
     
     st.divider()
     
-    # Busca e Tabela
     busca = st.text_input("🔍 O que você procura? (Digite o Código ou Descrição):")
     if busca:
         df_exibir = df[df['Codigo'].str.contains(busca, case=False, na=False) | 
@@ -67,7 +81,6 @@ if menu == "Consulta (Público)":
     else:
         df_exibir = df
         
-    # Tabela com colunas renomeadas e formatadas
     st.dataframe(
         df_exibir, 
         use_container_width=True, 
@@ -85,7 +98,6 @@ if menu == "Consulta (Público)":
 # ==========================================
 elif menu == "Almoxarifado (Restrito)":
     
-    # Coloca a logo pequena na barra lateral para a equipe do almoxarifado
     try:
         st.sidebar.image("logo.png", use_container_width=True) 
     except:
@@ -114,32 +126,43 @@ elif menu == "Almoxarifado (Restrito)":
                 codigo_limpo = str(codigo).strip()
                 cc_limpo = str(cc).strip()
                 
-                filtro = (df['Codigo'] == codigo_limpo) & (df['CC'].astype(str).str.strip() == cc_limpo)
+                # Conecta ao banco para fazer a operação de forma segura
+                conn = sqlite3.connect(DB_NAME)
+                c = conn.cursor()
                 
-                if filtro.any(): 
-                    idx = df[filtro].index[0]
-                    saldo_atual = df.at[idx, 'Quantidade']
+                # Verifica se o item já existe
+                c.execute("SELECT Quantidade FROM estoque WHERE Codigo=? AND CC=?", (codigo_limpo, cc_limpo))
+                resultado = c.fetchone()
+                
+                if resultado: 
+                    # ITEM EXISTE
+                    saldo_atual = resultado[0]
                     
                     if operacao == "1 - Entrada (+)":
-                        df.at[idx, 'Quantidade'] = saldo_atual + qtd
-                        st.success(f"Entrada registrada! Novo saldo: {saldo_atual + qtd}")
+                        novo_saldo = saldo_atual + qtd
+                        c.execute("UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?", (novo_saldo, codigo_limpo, cc_limpo))
+                        st.success(f"Entrada registrada! Novo saldo: {novo_saldo}")
                     else:
                         if saldo_atual < qtd:
                             st.error(f"Saldo insuficiente! Disponível: {saldo_atual}")
                         else:
-                            df.at[idx, 'Quantidade'] = saldo_atual - qtd
-                            st.success(f"Saída registrada! Novo saldo: {saldo_atual - qtd}")
-                    
-                    df.to_csv(ARQUIVO_ESTOQUE, index=False)
-                    
+                            novo_saldo = saldo_atual - qtd
+                            c.execute("UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?", (novo_saldo, codigo_limpo, cc_limpo))
+                            st.success(f"Saída registrada! Novo saldo: {novo_saldo}")
                 else: 
+                    # ITEM NÃO EXISTE
                     if operacao == "2 - Saída (-)":
                         st.error("Erro: Não há saldo deste item neste setor para realizar saída.")
                     else:
                         if not descricao:
                             st.error("Item inédito! Preencha a 'Descrição' para cadastrar.")
                         else:
-                            novo_item = pd.DataFrame([{'Codigo': codigo_limpo, 'Descricao': descricao, 'Quantidade': qtd, 'CC': cc_limpo}])
-                            df = pd.concat([df, novo_item], ignore_index=True)
-                            df.to_csv(ARQUIVO_ESTOQUE, index=False)
+                            c.execute("INSERT INTO estoque (Codigo, Descricao, Quantidade, CC) VALUES (?, ?, ?, ?)", 
+                                      (codigo_limpo, descricao, qtd, cc_limpo))
                             st.success(f"Novo registro criado e entrada realizada para {cc}")
+                
+                conn.commit()
+                conn.close()
+                
+                # Recarrega a tela para atualizar os números
+                st.rerun()
