@@ -7,7 +7,7 @@ st.set_page_config(page_title="Almoxarifado", layout="wide")
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_ESTOQUE = 'estoque.csv'
-ARQUIVO_PLANILHA = 'SuaPlanilha.xlsx' # Ajuste o nome se necessário
+ARQUIVO_PLANILHA = 'Almoxarifado.xlsm' # Ajuste o nome se necessário
 SENHA_ACESSO = "1234" # Troque por uma senha segura
 
 # --- CARREGAR DADOS ---
