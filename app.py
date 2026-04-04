@@ -2,18 +2,18 @@ import streamlit as st
 import pandas as pd
 import os
 
-st.set_page_config(page_title="Almoxarifado", layout="wide")
+# Configuração da página (deixa a tela mais larga e limpa)
+st.set_page_config(page_title="Almoxarifado", layout="wide", page_icon="📦")
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_ESTOQUE = 'estoque.csv'
-ARQUIVO_PLANILHA = 'Almoxarifado.xlsm' # Nome exato e extensão .xlsm corrigidos
+ARQUIVO_PLANILHA = 'Almoxarifado.xlsm' 
 SENHA_ACESSO = "Almoxarifado" 
 
 # --- CARREGAR DADOS ---
 @st.cache_data
 def carregar_ccs():
     try:
-        # engine='openpyxl' garante a leitura de arquivos .xlsm
         df_bd = pd.read_excel(ARQUIVO_PLANILHA, sheet_name='BD', engine='openpyxl')
         return df_bd['Centro de Custo'].dropna().unique().tolist()
     except Exception as e:
@@ -21,47 +21,76 @@ def carregar_ccs():
 
 lista_cc = carregar_ccs()
 
+# Cria o CSV se não existir
 if not os.path.exists(ARQUIVO_ESTOQUE):
     pd.DataFrame(columns=['Codigo', 'Descricao', 'Quantidade', 'CC']).to_csv(ARQUIVO_ESTOQUE, index=False)
-df = pd.read_csv(ARQUIVO_ESTOQUE)
 
-# --- MENU LATERAL E LOGO ---
-try:
-    st.sidebar.image("logo.png", use_container_width=True) 
-except:
-    st.sidebar.warning("Logo não encontrada.")
+# SOLUÇÃO DO ITEM INÉDITO: Força a leitura do Código sempre como Texto puro e remove casas decimais
+df = pd.read_csv(ARQUIVO_ESTOQUE, dtype={'Codigo': str})
+df['Codigo'] = df['Codigo'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 
+# --- MENU LATERAL ---
 menu = st.sidebar.radio("Navegação:", ["Consulta (Público)", "Almoxarifado (Restrito)"])
 
 # ==========================================
 # TELA 1: CONSULTA DE ESTOQUE (PÚBLICA)
 # ==========================================
 if menu == "Consulta (Público)":
-    st.title("📊 Painel de Estoque")
     
-    col1, col2 = st.columns(2)
-    col1.metric("Total de Peças", df['Quantidade'].sum() if not df.empty else 0)
-    col2.metric("Variedade de Itens", df['Codigo'].nunique() if not df.empty else 0)
+    # Cabeçalho com Logo
+    col_logo, col_titulo = st.columns([1, 4])
+    with col_logo:
+        try:
+            st.image("logo.png", width=150)
+        except:
+            st.info("Sua logo aparecerá aqui")
+            
+    with col_titulo:
+        st.title("Painel de Estoque")
+        st.markdown("*Acompanhe a disponibilidade de materiais em tempo real.*")
     
     st.divider()
     
-    busca = st.text_input("🔍 Buscar por Código ou Descrição:")
+    # Indicadores visuais
+    col1, col2, col3 = st.columns(3)
+    col1.metric("📦 Total de Peças", df['Quantidade'].sum() if not df.empty else 0)
+    col2.metric("🏷️ Variedade de Itens", df['Codigo'].nunique() if not df.empty else 0)
+    col3.metric("🏢 Setores Atendidos", df['CC'].nunique() if not df.empty else 0)
+    
+    st.divider()
+    
+    # Busca e Tabela
+    busca = st.text_input("🔍 O que você procura? (Digite o Código ou Descrição):")
     if busca:
-        df_exibir = df[df['Codigo'].astype(str).str.contains(busca, case=False) | 
-                       df['Descricao'].astype(str).str.contains(busca, case=False)]
+        df_exibir = df[df['Codigo'].str.contains(busca, case=False, na=False) | 
+                       df['Descricao'].astype(str).str.contains(busca, case=False, na=False)]
     else:
         df_exibir = df
         
-    st.dataframe(df_exibir, use_container_width=True, hide_index=True)
-    
-    if not df.empty:
-        st.subheader("Quantidade por Centro de Custo")
-        st.bar_chart(df.groupby('CC')['Quantidade'].sum())
+    # Tabela com colunas renomeadas e formatadas
+    st.dataframe(
+        df_exibir, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "Codigo": st.column_config.TextColumn("Código do Item"),
+            "Descricao": st.column_config.TextColumn("Descrição"),
+            "Quantidade": st.column_config.NumberColumn("Qtd. Disponível"),
+            "CC": st.column_config.TextColumn("Centro de Custo")
+        }
+    )
 
 # ==========================================
 # TELA 2: ALMOXARIFADO (RESTRITA)
 # ==========================================
 elif menu == "Almoxarifado (Restrito)":
+    
+    # Coloca a logo pequena na barra lateral para a equipe do almoxarifado
+    try:
+        st.sidebar.image("logo.png", use_container_width=True) 
+    except:
+        pass
+
     st.title("🔒 Gestão do Almoxarifado")
     
     senha = st.text_input("Senha de acesso:", type="password")
@@ -82,9 +111,10 @@ elif menu == "Almoxarifado (Restrito)":
             if not codigo:
                 st.warning("Por favor, digite o código do item.")
             else:
-                # CORREÇÃO: Forçando 'Codigo' e 'CC' a serem comparados como texto exato
-                filtro = (df['Codigo'].astype(str).str.strip() == str(codigo).strip()) & \
-                         (df['CC'].astype(str).str.strip() == str(cc).strip())
+                codigo_limpo = str(codigo).strip()
+                cc_limpo = str(cc).strip()
+                
+                filtro = (df['Codigo'] == codigo_limpo) & (df['CC'].astype(str).str.strip() == cc_limpo)
                 
                 if filtro.any(): 
                     idx = df[filtro].index[0]
@@ -109,7 +139,7 @@ elif menu == "Almoxarifado (Restrito)":
                         if not descricao:
                             st.error("Item inédito! Preencha a 'Descrição' para cadastrar.")
                         else:
-                            novo_item = pd.DataFrame([{'Codigo': codigo, 'Descricao': descricao, 'Quantidade': qtd, 'CC': cc}])
+                            novo_item = pd.DataFrame([{'Codigo': codigo_limpo, 'Descricao': descricao, 'Quantidade': qtd, 'CC': cc_limpo}])
                             df = pd.concat([df, novo_item], ignore_index=True)
                             df.to_csv(ARQUIVO_ESTOQUE, index=False)
                             st.success(f"Novo registro criado e entrada realizada para {cc}")
