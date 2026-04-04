@@ -2,22 +2,22 @@ import streamlit as st
 import pandas as pd
 import os
 
-# Configuração da página (deve ser a primeira linha)
 st.set_page_config(page_title="Almoxarifado", layout="wide")
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_ESTOQUE = 'estoque.csv'
-ARQUIVO_PLANILHA = 'Almoxarifado.xlsm' # Ajuste o nome se necessário
-SENHA_ACESSO = "1234" # Troque por uma senha segura
+ARQUIVO_PLANILHA = 'Almoxarifado.xlsm' # Nome exato e extensão .xlsm corrigidos
+SENHA_ACESSO = "Almoxarifado" 
 
 # --- CARREGAR DADOS ---
 @st.cache_data
 def carregar_ccs():
     try:
-        df_bd = pd.read_excel(ARQUIVO_PLANILHA, sheet_name='BD')
+        # engine='openpyxl' garante a leitura de arquivos .xlsm
+        df_bd = pd.read_excel(ARQUIVO_PLANILHA, sheet_name='BD', engine='openpyxl')
         return df_bd['Centro de Custo'].dropna().unique().tolist()
-    except:
-        return ["Erro ao ler planilha BD"]
+    except Exception as e:
+        return [f"Erro ao ler planilha: {e}"]
 
 lista_cc = carregar_ccs()
 
@@ -27,7 +27,6 @@ df = pd.read_csv(ARQUIVO_ESTOQUE)
 
 # --- MENU LATERAL E LOGO ---
 try:
-    # A logo deve estar na mesma pasta com o nome logo.png
     st.sidebar.image("logo.png", use_container_width=True) 
 except:
     st.sidebar.warning("Logo não encontrada.")
@@ -40,14 +39,12 @@ menu = st.sidebar.radio("Navegação:", ["Consulta (Público)", "Almoxarifado (R
 if menu == "Consulta (Público)":
     st.title("📊 Painel de Estoque")
     
-    # 1. Indicadores Visuais
     col1, col2 = st.columns(2)
-    col1.metric("Total de Peças", df['Quantidade'].sum())
-    col2.metric("Variedade de Itens", df['Codigo'].nunique())
+    col1.metric("Total de Peças", df['Quantidade'].sum() if not df.empty else 0)
+    col2.metric("Variedade de Itens", df['Codigo'].nunique() if not df.empty else 0)
     
     st.divider()
     
-    # 2. Busca e Tabela
     busca = st.text_input("🔍 Buscar por Código ou Descrição:")
     if busca:
         df_exibir = df[df['Codigo'].astype(str).str.contains(busca, case=False) | 
@@ -57,7 +54,6 @@ if menu == "Consulta (Público)":
         
     st.dataframe(df_exibir, use_container_width=True, hide_index=True)
     
-    # 3. Gráfico Visual
     if not df.empty:
         st.subheader("Quantidade por Centro de Custo")
         st.bar_chart(df.groupby('CC')['Quantidade'].sum())
@@ -86,7 +82,9 @@ elif menu == "Almoxarifado (Restrito)":
             if not codigo:
                 st.warning("Por favor, digite o código do item.")
             else:
-                filtro = (df['Codigo'] == codigo) & (df['CC'] == cc)
+                # CORREÇÃO: Forçando 'Codigo' e 'CC' a serem comparados como texto exato
+                filtro = (df['Codigo'].astype(str).str.strip() == str(codigo).strip()) & \
+                         (df['CC'].astype(str).str.strip() == str(cc).strip())
                 
                 if filtro.any(): 
                     idx = df[filtro].index[0]
