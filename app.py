@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import sqlite3
 import uuid
@@ -327,44 +328,114 @@ if menu == "📊 Consulta":
     img2 = f'<img src="{src2}" style="{LOGO_STYLE}">' if src2 else '<span style="color:#4a7a94;font-weight:700;">LOGO 2</span>'
 
     # Calcula métricas
-    total_pecas  = f"{df['Quantidade'].sum():.0f}" if not df.empty else "0"
-    total_itens  = str(df['Codigo'].nunique())     if not df.empty else "0"
-    total_setores = str(df['CC'].nunique())        if not df.empty else "0"
+    total_pecas   = f"{df['Quantidade'].sum():.0f}" if not df.empty else "0"
+    total_itens   = str(df['Codigo'].nunique())     if not df.empty else "0"
+    total_setores = str(df['CC'].nunique())         if not df.empty else "0"
 
-    st.markdown(f"""
-    <!-- ═══ HEADER ═══ -->
+    # Usa components.html para evitar bug do st.markdown com base64 muito grande
+    components.html(f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+      * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Sora', sans-serif; }}
+
+      .header-container {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 32px;
+        background: linear-gradient(135deg, #0f2027 0%, #1a3a4a 60%, #0d3349 100%);
+        border-radius: 16px;
+        margin-bottom: 16px;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+        gap: 16px;
+      }}
+      .header-logo-img {{
+        display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      }}
+      .header-logo-img img {{
+        height: 52px; max-width: 140px; object-fit: contain;
+        mix-blend-mode: lighten; filter: brightness(1.15) contrast(1.05);
+      }}
+      .header-title-block {{ text-align: center; flex: 1; padding: 0 16px; }}
+      .header-title-block h1 {{
+        font-size: 1.8rem; font-weight: 700; color: #fff;
+        letter-spacing: 0.02em; text-transform: uppercase; line-height: 1.15;
+      }}
+      .header-title-block p {{
+        font-size: 0.75rem; color: #7eb8d4; margin-top: 5px;
+        letter-spacing: 0.22em; text-transform: uppercase;
+      }}
+      .header-right {{
+        display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0;
+      }}
+      .header-badge {{
+        background: rgba(126,184,212,0.15); border: 1px solid rgba(126,184,212,0.3);
+        color: #7eb8d4; border-radius: 20px; padding: 4px 12px;
+        font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em; white-space: nowrap;
+      }}
+
+      .metrics-grid {{
+        display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4px;
+      }}
+      .metric-card {{
+        background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 12px;
+        padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+      }}
+      .metric-label {{ font-size: 0.78rem; color: #718096; font-weight: 600; margin-bottom: 4px; }}
+      .metric-value {{ font-size: 1.9rem; font-weight: 700; color: #1a202c; line-height: 1.1; }}
+
+      /* ── MOBILE ── */
+      @media (max-width: 640px) {{
+        .header-container {{
+          flex-direction: column; padding: 14px 16px; gap: 10px; text-align: center;
+        }}
+        .header-logo-img img {{ height: 38px; max-width: 110px; }}
+        .header-title-block h1 {{ font-size: 1.2rem; }}
+        .header-title-block p  {{ font-size: 0.68rem; letter-spacing: 0.14em; }}
+        .header-right {{ align-items: center; flex-direction: row; justify-content: center; width: 100%; }}
+        .metrics-grid {{ grid-template-columns: 1fr; gap: 8px; }}
+        .metric-card  {{ padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; }}
+        .metric-label {{ margin-bottom: 0; font-size: 0.82rem; }}
+        .metric-value {{ font-size: 1.35rem; }}
+      }}
+    </style>
+    </head>
+    <body>
+
     <div class="header-container">
-
-        <!-- Desktop: logo esquerda | Mobile: linha de logos -->
-        <div class="header-logo-img" id="logo-left">{img1}</div>
-
-        <div class="header-title-block">
-            <h1>Inventário Brastel</h1>
-            <p>Almoxarifado</p>
-        </div>
-
-        <div class="header-right">
-            <div class="header-logo-img">{img2}</div>
-            <span class="header-badge">🟢 {total_ativos}/{LIMITE_PESSOAS} online</span>
-        </div>
+      <div class="header-logo-img">{img1}</div>
+      <div class="header-title-block">
+        <h1>Inventário Brastel</h1>
+        <p>Almoxarifado</p>
+      </div>
+      <div class="header-right">
+        <div class="header-logo-img">{img2}</div>
+        <span class="header-badge">🟢 {total_ativos}/{LIMITE_PESSOAS} online</span>
+      </div>
     </div>
 
-    <!-- ═══ MÉTRICAS RESPONSIVAS ═══ -->
     <div class="metrics-grid">
-        <div class="metric-card">
-            <div class="metric-label">📦 Total de Peças</div>
-            <div class="metric-value">{total_pecas}</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">🏷️ Itens Únicos</div>
-            <div class="metric-value">{total_itens}</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">🏢 Setores</div>
-            <div class="metric-value">{total_setores}</div>
-        </div>
+      <div class="metric-card">
+        <div class="metric-label">📦 Total de Peças</div>
+        <div class="metric-value">{total_pecas}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">🏷️ Itens Únicos</div>
+        <div class="metric-value">{total_itens}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">🏢 Setores</div>
+        <div class="metric-value">{total_setores}</div>
+      </div>
     </div>
-    """, unsafe_allow_html=True)
+
+    </body>
+    </html>
+    """, height=260, scrolling=False)
 
     st.divider()
 
