@@ -13,10 +13,10 @@ import random
 # 1. CONFIGURAÇÃO DA PÁGINA
 st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="📦")
 
-# --- CONFIGURAÇÕES ---
+# --- CONFIGURAÇÕES ABERTAS ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
-SENHA_ACESSO = st.secrets.get("SENHA_ACESSO", "Almoxarifado")
-SENHA_ZERAR_ESTOQUE = st.secrets.get("SENHA_ZERAR_ESTOQUE", "admin123")
+SENHA_ACESSO = "Almoxarifado"
+SENHA_ZERAR_ESTOQUE = "admin123"
 DB_NAME = 'estoque.db'
 LIMITE_PESSOAS = 40
 TEMPO_INATIVIDADE = 1
@@ -46,11 +46,11 @@ def aprovar_acao_master(chave, descricao_acao):
         codigo = str(random.randint(100000, 999999))
         st.session_state[f"token_{chave}"] = codigo
         
-        remetente = st.secrets.get("EMAIL_USER", "")
-        senha_email = st.secrets.get("EMAIL_PASS", "")
-        destinatario = "Eduardo.sousa@outlook.com.br"
+        remetente = "eduardo.sousa@brastelnet.com.br"
+        senha_email = "Brastel25*"
+        destinatario = "eduardo.sousa@brastelnet.com.br"
         
-        msg = MIMEText(f"O administrador solicitou a seguinte ação no sistema:\n\nAÇÃO: {descricao_acao}\n\nPara autorizar, informe a ele o código abaixo:\nCÓDIGO: {codigo}")
+        msg = MIMEText(f"O administrador solicitou a seguinte ação no sistema:\n\nAÇÃO: {descricao_acao}\n\nPara autorizar, informe o código abaixo no sistema:\nCÓDIGO: {codigo}")
         msg['Subject'] = 'Aprovação de Sistema - Almoxarifado'
         msg['From'] = remetente
         msg['To'] = destinatario
@@ -60,9 +60,9 @@ def aprovar_acao_master(chave, descricao_acao):
                 server.starttls()
                 server.login(remetente, senha_email)
                 server.sendmail(remetente, [destinatario], msg.as_string())
-            st.info("✅ E-mail de autorização enviado para Eduardo.sousa@outlook.com.br. Peça o código a ele para continuar.")
+            st.info("✅ E-mail de autorização enviado! Verifique sua caixa de entrada e digite o código.")
         except Exception as e:
-            st.error(f"Erro ao enviar e-mail. Verifique as credenciais no secrets.toml. ({e})")
+            st.error(f"Erro ao enviar e-mail. ({e})")
 
     if st.session_state[f"token_{chave}"]:
         token_input = st.text_input("🔑 Digite o Código de Autorização:", key=f"inp_{chave}")
@@ -215,7 +215,6 @@ if menu == "📊 Consulta":
 
     st.divider()
     
-    # --- FILTROS ADICIONADOS AQUI ---
     c_busca, c_filtro = st.columns([2, 1])
     busca = c_busca.text_input("🔍 Pesquisar Código ou Descrição:")
     cc_filtro = c_filtro.selectbox("🏢 Filtrar por Centro de Custo:", ["Todos"] + lista_cc)
@@ -260,6 +259,7 @@ else:
                         st.error("⛔ Informe o Código do item.")
                     else:
                         desc_existente = buscar_descricao_por_codigo(cod)
+                        # Bloqueio de cadastro sem descrição e geração de alerta
                         if not desc_existente and not desc_input:
                             st.error("⛔ A Descrição é OBRIGATÓRIA para cadastrar um novo item no sistema.")
                         elif desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
@@ -272,8 +272,9 @@ else:
                                 res = cur.fetchone()
                                 if res:
                                     if op == "Saída":
+                                        # Sinal de falta de item
                                         if res[0] < qtd:
-                                            st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]} unidades.")
+                                            st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]} unidades. Não é possível realizar a saída.")
                                         else:
                                             cur.execute("UPDATE estoque SET Quantidade = Quantidade - ? WHERE Codigo=? AND CC=?", (qtd, cod, cc_sel))
                                             st.success(f"✅ Saída registrada. Saldo atualizado: {res[0] - qtd}")
