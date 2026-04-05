@@ -12,7 +12,7 @@ st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="�
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
-SENHA_ACESSO = "Almoxarifado"
+SENHA_ACESSO = "1234"
 SENHA_ZERAR_ESTOQUE = "admin123"
 DB_NAME = 'estoque.db'
 LIMITE_PESSOAS = 40
@@ -152,6 +152,7 @@ if menu == "📊 Consulta":
     total_itens   = str(df_ativos['Codigo'].nunique())     if not df_ativos.empty else "0"
     total_setores = str(df_ativos['CC'].nunique())         if not df_ativos.empty else "0"
 
+    # Header reestruturado com CSS Grid
     components.html(f"""
     <!DOCTYPE html>
     <html>
@@ -160,43 +161,66 @@ if menu == "📊 Consulta":
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
       * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Sora', sans-serif; }}
+      
       .header-container {{
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 18px 32px; border-radius: 16px; margin-bottom: 16px;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        grid-template-rows: auto auto;
+        align-items: center;
+        padding: 20px 32px; border-radius: 16px; margin-bottom: 16px;
         background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; gap: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;
       }}
-      .header-logo-left {{ display: flex; align-items: center; justify-content: flex-start; flex: 1; }}
-      .header-right {{ display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 8px; flex: 1; }}
-      .logo-img {{ height: 50px; width: 140px; object-fit: contain; mix-blend-mode: darken; }}
-      .header-title-block {{ text-align: center; flex: 2; padding: 0 16px; }}
-      .header-title-block h1 {{ font-size: 1.8rem; font-weight: 700; color: #102a43; letter-spacing: 0.02em; text-transform: uppercase; line-height: 1.15; }}
-      .header-title-block p {{ font-size: 0.75rem; color: #334e68; margin-top: 5px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; }}
-      .header-badge {{ background: rgba(16,42,67,0.1); border: 1px solid rgba(16,42,67,0.2); color: #102a43; border-radius: 20px; padding: 4px 12px; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em; white-space: nowrap; }}
+      
+      .left-logo {{ grid-column: 1; grid-row: 1 / 3; justify-self: start; display: flex; align-items: center; }}
+      .title-box {{ grid-column: 2; grid-row: 1 / 3; text-align: center; padding: 0 20px; }}
+      .right-logo {{ grid-column: 3; grid-row: 1; justify-self: end; display: flex; align-items: center; }}
+      .badge-box {{ grid-column: 3; grid-row: 2; justify-self: end; margin-top: 8px; }}
+      
+      .logo-img {{ max-height: 55px; max-width: 150px; object-fit: contain; mix-blend-mode: darken; }}
+      
+      .title-box h1 {{ font-size: 1.8rem; font-weight: 700; color: #102a43; letter-spacing: 0.02em; line-height: 1.15; }}
+      .title-box p {{ font-size: 0.75rem; color: #334e68; margin-top: 5px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; }}
+      
+      .header-badge {{ background: rgba(16,42,67,0.1); border: 1px solid rgba(16,42,67,0.2); color: #102a43; border-radius: 20px; padding: 4px 12px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }}
+      
       .metrics-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4px; }}
       .metric-card {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }}
       .metric-label {{ font-size: 0.78rem; color: #718096; font-weight: 600; margin-bottom: 4px; }}
       .metric-value {{ font-size: 1.9rem; font-weight: 700; color: #1a202c; line-height: 1.1; }}
-      @media (max-width: 640px) {{
-        .header-container {{ flex-direction: column; padding: 14px 16px; gap: 10px; text-align: center; }}
-        .header-logo-left, .header-right {{ flex: auto; align-items: center; justify-content: center; width: 100%; flex-direction: row; }}
-        .header-title-block h1 {{ font-size: 1.2rem; }}
+      
+      /* --- CELULAR --- */
+      @media (max-width: 768px) {{
+        .header-container {{
+          grid-template-columns: 1fr 1fr;
+          grid-template-rows: auto auto auto;
+          gap: 12px;
+          padding: 16px;
+        }}
+        .left-logo {{ grid-column: 1; grid-row: 1; justify-self: start; }}
+        .right-logo {{ grid-column: 2; grid-row: 1; justify-self: end; }}
+        .title-box {{ grid-column: 1 / 3; grid-row: 2; padding: 10px 0; }}
+        .badge-box {{ grid-column: 1 / 3; grid-row: 3; justify-self: center; margin-top: 0; }}
+        
+        .logo-img {{ max-height: 40px; max-width: 120px; }}
+        .title-box h1 {{ font-size: 1.3rem; }}
+        
         .metrics-grid {{ grid-template-columns: 1fr; gap: 8px; }}
-        .metric-card  {{ padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; }}
+        .metric-card  {{ padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; }}
         .metric-label {{ margin-bottom: 0; font-size: 0.82rem; }}
-        .metric-value {{ font-size: 1.35rem; }}
+        .metric-value {{ font-size: 1.4rem; }}
       }}
     </style>
     </head>
     <body>
     <div class="header-container">
-      <div class="header-logo-left">{img1}</div>
-      <div class="header-title-block">
-        <h1>Inventário Brastel</h1>
-        <p>Almoxarifado</p>
+      <div class="left-logo">{img1}</div>
+      <div class="title-box">
+        <h1>INVENTÁRIO BRASTEL</h1>
+        <p>ALMOXARIFADO</p>
       </div>
-      <div class="header-right">
-        {img2}
+      <div class="right-logo">{img2}</div>
+      <div class="badge-box">
         <span class="header-badge">🟢 {total_ativos}/{LIMITE_PESSOAS} online</span>
       </div>
     </div>
@@ -236,22 +260,21 @@ if menu == "📊 Consulta":
 else:
     st.title("🔒 Área Restrita — Almoxarifado")
     
-    # A mágica do acesso escondido acontece aqui:
     senha = st.text_input("Senha:", type="password")
 
     if senha == SENHA_ACESSO or senha == SENHA_ZERAR_ESTOQUE:
         
-        # Configuração das abas dinâmicas
+        # Abas comuns (visíveis para todos os almoxarifes)
         abas_nomes = [
             "📝 Registro Individual",
             "📤 Carga em Massa",
-            "🏢 Gerenciar Setores",
             "🗑️ Excluir Item"
         ]
         
-        # Só adiciona a aba de Limpar Dados se a senha digitada for a Master
+        # Abas secretas (visíveis apenas com a Senha Master)
         if senha == SENHA_ZERAR_ESTOQUE:
-            abas_nomes.append("⚠️ Limpar Dados (Acesso Master)")
+            abas_nomes.append("🏢 Gerenciar Setores (Master)")
+            abas_nomes.append("⚠️ Limpar Dados (Master)")
 
         abas = st.tabs(abas_nomes)
 
@@ -346,60 +369,9 @@ else:
                     st.error(f"Erro: {e}")
 
         # ------------------------------------------
-        # TAB 3: GERENCIAR SETORES E DE/PARA
+        # TAB 3: EXCLUIR ITEM ESPECÍFICO
         # ------------------------------------------
         with abas[2]:
-            c_sec1, c_sec2 = st.columns(2)
-            
-            with c_sec1:
-                st.subheader("➕ Novo Setor")
-                novo_cc = st.text_input("Nome:")
-                if st.button("Cadastrar"):
-                    if novo_cc:
-                        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                            conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (novo_cc,))
-                        st.success("Setor cadastrado!")
-                        st.cache_data.clear()
-                        st.rerun()
-            
-            with c_sec2:
-                st.subheader("🔄 De/Para (Individual)")
-                cc_antigo = st.selectbox("De:", lista_cc)
-                cc_novo = st.text_input("Para (Novo Nome):")
-                if st.button("Renomear Único"):
-                    if cc_novo and cc_antigo:
-                        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                            conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc_novo,))
-                            conn.execute("UPDATE estoque SET CC = ? WHERE CC = ?", (cc_novo, cc_antigo))
-                            conn.execute("DELETE FROM centros_custo WHERE nome = ?", (cc_antigo,))
-                        st.success("Setor renomeado!")
-                        st.cache_data.clear()
-                        st.rerun()
-
-            st.divider()
-            st.subheader("📂 De/Para em Massa")
-            st.info("Suba uma planilha com as colunas **De** (Nome atual) e **Para** (Novo nome).")
-            st.download_button("⬇️ Template De/Para", gerar_template_depara(), "template_depara.xlsx")
-            arq_depara = st.file_uploader("Arquivo De/Para (.xlsx):", type=["xlsx"])
-            
-            if arq_depara and st.button("🚀 Processar De/Para em Massa"):
-                df_dp = pd.read_excel(arq_depara)
-                if 'De' in df_dp.columns and 'Para' in df_dp.columns:
-                    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                        for _, row in df_dp.iterrows():
-                            de, para = str(row['De']).strip(), str(row['Para']).strip()
-                            if de != 'nan' and para != 'nan':
-                                conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (para,))
-                                conn.execute("UPDATE estoque SET CC = ? WHERE CC = ?", (para, de))
-                                conn.execute("DELETE FROM centros_custo WHERE nome = ?", (de,))
-                    st.success("De/Para em massa concluído!")
-                    st.cache_data.clear()
-                    st.rerun()
-
-        # ------------------------------------------
-        # TAB 4: EXCLUIR ITEM ESPECÍFICO
-        # ------------------------------------------
-        with abas[3]:
             st.subheader("🗑️ Excluir Item do Banco")
             st.warning("Esta ação apagará o código e seu histórico de estoque de todos os setores.")
             
@@ -417,11 +389,65 @@ else:
                                 st.error("⛔ Código não encontrado no banco de dados.")
                         st.cache_data.clear()
 
-        # ------------------------------------------
-        # TAB 5: LIMPAR DADOS (ÁREA SECRETA)
-        # ------------------------------------------
-        # Esta aba só existe/renderiza se a senha for "admin123"
+        # ==========================================
+        # ÁREA MASTER: SETORES & LIMPEZA DE DADOS
+        # ==========================================
         if senha == SENHA_ZERAR_ESTOQUE:
+            
+            # ------------------------------------------
+            # TAB 4 (MASTER): GERENCIAR SETORES E DE/PARA
+            # ------------------------------------------
+            with abas[3]:
+                c_sec1, c_sec2 = st.columns(2)
+                
+                with c_sec1:
+                    st.subheader("➕ Novo Setor")
+                    novo_cc = st.text_input("Nome:")
+                    if st.button("Cadastrar"):
+                        if novo_cc:
+                            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                                conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (novo_cc,))
+                            st.success("Setor cadastrado!")
+                            st.cache_data.clear()
+                            st.rerun()
+                
+                with c_sec2:
+                    st.subheader("🔄 De/Para (Individual)")
+                    cc_antigo = st.selectbox("De:", lista_cc)
+                    cc_novo = st.text_input("Para (Novo Nome):")
+                    if st.button("Renomear Único"):
+                        if cc_novo and cc_antigo:
+                            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                                conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc_novo,))
+                                conn.execute("UPDATE estoque SET CC = ? WHERE CC = ?", (cc_novo, cc_antigo))
+                                conn.execute("DELETE FROM centros_custo WHERE nome = ?", (cc_antigo,))
+                            st.success("Setor renomeado!")
+                            st.cache_data.clear()
+                            st.rerun()
+
+                st.divider()
+                st.subheader("📂 De/Para em Massa")
+                st.info("Suba uma planilha com as colunas **De** (Nome atual) e **Para** (Novo nome).")
+                st.download_button("⬇️ Template De/Para", gerar_template_depara(), "template_depara.xlsx")
+                arq_depara = st.file_uploader("Arquivo De/Para (.xlsx):", type=["xlsx"])
+                
+                if arq_depara and st.button("🚀 Processar De/Para em Massa"):
+                    df_dp = pd.read_excel(arq_depara)
+                    if 'De' in df_dp.columns and 'Para' in df_dp.columns:
+                        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                            for _, row in df_dp.iterrows():
+                                de, para = str(row['De']).strip(), str(row['Para']).strip()
+                                if de != 'nan' and para != 'nan':
+                                    conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (para,))
+                                    conn.execute("UPDATE estoque SET CC = ? WHERE CC = ?", (para, de))
+                                    conn.execute("DELETE FROM centros_custo WHERE nome = ?", (de,))
+                        st.success("De/Para em massa concluído!")
+                        st.cache_data.clear()
+                        st.rerun()
+
+            # ------------------------------------------
+            # TAB 5 (MASTER): LIMPAR DADOS
+            # ------------------------------------------
             with abas[4]:
                 st.subheader("⚠️ Área de Risco - Acesso Master")
                 
