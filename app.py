@@ -12,9 +12,8 @@ st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="�
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
-# Busca as senhas no secrets.toml de forma segura. Se não existir, usa as padrão.
-SENHA_ACESSO = st.secrets.get("SENHA_ACESSO", "1234")
-SENHA_ZERAR_ESTOQUE = st.secrets.get("SENHA_ZERAR_ESTOQUE", "admin123")
+SENHA_ACESSO = "1234"
+SENHA_ZERAR_ESTOQUE = "admin123"
 DB_NAME = 'estoque.db'
 LIMITE_PESSOAS = 40
 TEMPO_INATIVIDADE = 1
@@ -252,7 +251,8 @@ else:
         # TAB 1: REGISTRO INDIVIDUAL
         # ------------------------------------------
         with tab1:
-            with st.form("registro"):
+            # clear_on_submit=True limpa os campos automaticamente, eliminando a necessidade de st.rerun() que apagava os avisos
+            with st.form("registro", clear_on_submit=True):
                 c1, c2 = st.columns(2)
                 cod        = c1.text_input("Código:")
                 desc_input = c2.text_input("Descrição (somente para itens novos):")
@@ -267,7 +267,11 @@ else:
                         st.error("⛔ Informe o Código do item.")
                     else:
                         desc_existente = buscar_descricao_por_codigo(cod)
-                        if desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
+                        
+                        # Trava de Segurança: Não permite cadastrar item novo sem descrição
+                        if not desc_existente and not desc_input:
+                            st.error("⛔ A Descrição é OBRIGATÓRIA para cadastrar um novo item no sistema.")
+                        elif desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
                             st.error(f"⛔ Conflito de Descrição! O código **{cod}** já está cadastrado com:\n\n**\"{desc_existente}\"**")
                         else:
                             desc_final = desc_existente if desc_existente else desc_input
@@ -278,7 +282,8 @@ else:
                                 
                                 if res:
                                     if op == "Saída" and res[0] < qtd:
-                                        st.error(f"⛔ Saldo insuficiente! O estoque atual é de {res[0]:.0f} unidades.")
+                                        # Sinal claro de falta de item (não deixa a saída acontecer)
+                                        st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]:.0f} unidades.")
                                     else:
                                         novo = (res[0] + qtd) if op == "Entrada" else (res[0] - qtd)
                                         cur.execute("UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?", (novo, cod, cc_sel))
@@ -286,13 +291,12 @@ else:
                                         st.cache_data.clear()
                                 else:
                                     if op == "Saída":
-                                        st.warning("⚠️ Item não encontrado neste setor. Não é possível realizar a saída.")
+                                        # Sinal claro se tentar dar saída em item que não existe no setor
+                                        st.error("⛔ ITEM NÃO ENCONTRADO! Não é possível realizar a saída de um item que não existe neste setor.")
                                     else:
                                         cur.execute("INSERT INTO estoque VALUES (?,?,?,?)", (cod, desc_final, qtd, cc_sel))
                                         st.success("✅ Item novo cadastrado com sucesso.")
                                         st.cache_data.clear()
-                            
-                            st.rerun()
 
         # ------------------------------------------
         # TAB 2: CARGA EM MASSA
@@ -315,7 +319,15 @@ else:
                                 for _, row in df_upload.iterrows():
                                     cod_r, desc_r, cc_r = str(row['Codigo']).strip(), str(row['Descricao']).strip(), str(row['CC']).strip()
                                     qtd_r = pd.to_numeric(row['Quantidade'], errors='coerce')
+                                    
                                     if pd.isna(qtd_r) or qtd_r <= 0: continue
+                                    if not cod_r or cod_r == 'nan': continue
+                                    
+                                    # Pula itens totalmente novos sem descrição na importação em massa
+                                    cur.execute("SELECT DISTINCT Descricao FROM estoque WHERE Codigo=?", (cod_r,))
+                                    desc_db = cur.fetchone()
+                                    if not desc_db and (not desc_r or desc_r.lower() == 'nan'):
+                                        continue
                                     
                                     cur.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc_r,))
                                     cur.execute("SELECT Quantidade FROM estoque WHERE Codigo=? AND CC=?", (cod_r, cc_r))
