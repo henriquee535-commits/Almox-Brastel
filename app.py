@@ -12,7 +12,7 @@ st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="�
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
-SENHA_ACESSO = "Almoxarifado"
+SENHA_ACESSO = "1234"
 SENHA_ZERAR_ESTOQUE = "admin123"
 DB_NAME = 'estoque.db'
 LIMITE_PESSOAS = 40
@@ -135,6 +135,10 @@ lista_cc = carregar_ccs()
 st.sidebar.title("Navegação")
 menu = st.sidebar.radio("Ir para:", ["📊 Consulta", "🔒 Almoxarifado"])
 
+# Contador de pessoas movido para a barra lateral
+st.sidebar.divider()
+st.sidebar.markdown(f"🟢 **{total_ativos}/{LIMITE_PESSOAS}** pessoas online")
+
 # ==========================================
 # TELA 1: CONSULTA
 # ==========================================
@@ -143,8 +147,8 @@ if menu == "📊 Consulta":
     src1 = logo_para_base64("logo1.png")
     src2 = logo_para_base64("logo2.png")
 
-    img1 = f'<img class="logo-img" src="{src1}">' if src1 else '<span style="color:#102a43;font-weight:700;">LOGO 1</span>'
-    img2 = f'<img class="logo-img" src="{src2}">' if src2 else '<span style="color:#102a43;font-weight:700;">LOGO 2</span>'
+    img1 = f'<img class="img-logo1" src="{src1}">' if src1 else '<span style="color:#102a43;font-weight:700;">LOGO 1</span>'
+    img2 = f'<img class="img-logo2" src="{src2}">' if src2 else '<span style="color:#102a43;font-weight:700;">LOGO 2</span>'
 
     df_ativos = df[df['Quantidade'] > 0]
 
@@ -152,7 +156,7 @@ if menu == "📊 Consulta":
     total_itens   = str(df_ativos['Codigo'].nunique())     if not df_ativos.empty else "0"
     total_setores = str(df_ativos['CC'].nunique())         if not df_ativos.empty else "0"
 
-    # Header reestruturado com CSS Grid
+    # Header reestruturado (Sem contador e com ajuste de peso visual dos logos)
     components.html(f"""
     <!DOCTYPE html>
     <html>
@@ -165,24 +169,22 @@ if menu == "📊 Consulta":
       .header-container {{
         display: grid;
         grid-template-columns: 1fr auto 1fr;
-        grid-template-rows: auto auto;
         align-items: center;
         padding: 20px 32px; border-radius: 16px; margin-bottom: 16px;
         background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%);
         box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;
       }}
       
-      .left-logo {{ grid-column: 1; grid-row: 1 / 3; justify-self: start; display: flex; align-items: center; }}
-      .title-box {{ grid-column: 2; grid-row: 1 / 3; text-align: center; padding: 0 20px; }}
-      .right-logo {{ grid-column: 3; grid-row: 1; justify-self: end; display: flex; align-items: center; }}
-      .badge-box {{ grid-column: 3; grid-row: 2; justify-self: end; margin-top: 8px; }}
+      .left-logo {{ justify-self: start; display: flex; align-items: center; }}
+      .title-box {{ text-align: center; padding: 0 20px; }}
+      .right-logo {{ justify-self: end; display: flex; align-items: center; }}
       
-      .logo-img {{ max-height: 55px; max-width: 150px; object-fit: contain; mix-blend-mode: darken; }}
+      /* Ajuste fino independente para equilibrar o peso visual dos dois logos */
+      .img-logo1 {{ height: 40px; width: auto; max-width: 160px; object-fit: contain; mix-blend-mode: darken; }}
+      .img-logo2 {{ height: 55px; width: auto; max-width: 160px; object-fit: contain; mix-blend-mode: darken; }}
       
       .title-box h1 {{ font-size: 1.8rem; font-weight: 700; color: #102a43; letter-spacing: 0.02em; line-height: 1.15; }}
       .title-box p {{ font-size: 0.75rem; color: #334e68; margin-top: 5px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; }}
-      
-      .header-badge {{ background: rgba(16,42,67,0.1); border: 1px solid rgba(16,42,67,0.2); color: #102a43; border-radius: 20px; padding: 4px 12px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }}
       
       .metrics-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4px; }}
       .metric-card {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }}
@@ -193,16 +195,16 @@ if menu == "📊 Consulta":
       @media (max-width: 768px) {{
         .header-container {{
           grid-template-columns: 1fr 1fr;
-          grid-template-rows: auto auto auto;
+          grid-template-rows: auto auto;
           gap: 12px;
           padding: 16px;
         }}
         .left-logo {{ grid-column: 1; grid-row: 1; justify-self: start; }}
         .right-logo {{ grid-column: 2; grid-row: 1; justify-self: end; }}
-        .title-box {{ grid-column: 1 / 3; grid-row: 2; padding: 10px 0; }}
-        .badge-box {{ grid-column: 1 / 3; grid-row: 3; justify-self: center; margin-top: 0; }}
+        .title-box {{ grid-column: 1 / 3; grid-row: 2; padding: 10px 0 0 0; }}
         
-        .logo-img {{ max-height: 40px; max-width: 120px; }}
+        .img-logo1 {{ height: 30px; }}
+        .img-logo2 {{ height: 40px; }}
         .title-box h1 {{ font-size: 1.3rem; }}
         
         .metrics-grid {{ grid-template-columns: 1fr; gap: 8px; }}
@@ -220,9 +222,6 @@ if menu == "📊 Consulta":
         <p>ALMOXARIFADO</p>
       </div>
       <div class="right-logo">{img2}</div>
-      <div class="badge-box">
-        <span class="header-badge">🟢 {total_ativos}/{LIMITE_PESSOAS} online</span>
-      </div>
     </div>
     <div class="metrics-grid">
       <div class="metric-card">
@@ -264,17 +263,19 @@ else:
 
     if senha == SENHA_ACESSO or senha == SENHA_ZERAR_ESTOQUE:
         
-        # Abas comuns (visíveis para todos os almoxarifes)
+        # Abas comuns
         abas_nomes = [
             "📝 Registro Individual",
-            "📤 Carga em Massa",
-            "🗑️ Excluir Item"
+            "📤 Carga em Massa"
         ]
         
         # Abas secretas (visíveis apenas com a Senha Master)
         if senha == SENHA_ZERAR_ESTOQUE:
-            abas_nomes.append("🏢 Gerenciar Setores (Master)")
-            abas_nomes.append("⚠️ Limpar Dados (Master)")
+            abas_nomes.extend([
+                "🗑️ Excluir Item (Master)",
+                "🏢 Gerenciar Setores (Master)",
+                "⚠️ Limpar Dados (Master)"
+            ])
 
         abas = st.tabs(abas_nomes)
 
@@ -368,32 +369,32 @@ else:
                 except Exception as e:
                     st.error(f"Erro: {e}")
 
-        # ------------------------------------------
-        # TAB 3: EXCLUIR ITEM ESPECÍFICO
-        # ------------------------------------------
-        with abas[2]:
-            st.subheader("🗑️ Excluir Item do Banco")
-            st.warning("Esta ação apagará o código e seu histórico de estoque de todos os setores.")
-            
-            with st.form("excluir_item", clear_on_submit=True):
-                cod_excluir = st.text_input("Digite o Código do item que deseja apagar:")
-                if st.form_submit_button("🚨 Confirmar Exclusão"):
-                    if cod_excluir:
-                        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                            cur = conn.cursor()
-                            cur.execute("SELECT * FROM estoque WHERE Codigo=?", (cod_excluir,))
-                            if cur.fetchone():
-                                cur.execute("DELETE FROM estoque WHERE Codigo=?", (cod_excluir,))
-                                st.success(f"✅ Todos os registros do código **{cod_excluir}** foram apagados!")
-                            else:
-                                st.error("⛔ Código não encontrado no banco de dados.")
-                        st.cache_data.clear()
-
         # ==========================================
-        # ÁREA MASTER: SETORES & LIMPEZA DE DADOS
+        # ÁREA MASTER
         # ==========================================
         if senha == SENHA_ZERAR_ESTOQUE:
             
+            # ------------------------------------------
+            # TAB 3 (MASTER): EXCLUIR ITEM ESPECÍFICO
+            # ------------------------------------------
+            with abas[2]:
+                st.subheader("🗑️ Excluir Item do Banco")
+                st.warning("Esta ação apagará o código e seu histórico de estoque de todos os setores.")
+                
+                with st.form("excluir_item", clear_on_submit=True):
+                    cod_excluir = st.text_input("Digite o Código do item que deseja apagar:")
+                    if st.form_submit_button("🚨 Confirmar Exclusão"):
+                        if cod_excluir:
+                            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                                cur = conn.cursor()
+                                cur.execute("SELECT * FROM estoque WHERE Codigo=?", (cod_excluir,))
+                                if cur.fetchone():
+                                    cur.execute("DELETE FROM estoque WHERE Codigo=?", (cod_excluir,))
+                                    st.success(f"✅ Todos os registros do código **{cod_excluir}** foram apagados!")
+                                else:
+                                    st.error("⛔ Código não encontrado no banco de dados.")
+                            st.cache_data.clear()
+
             # ------------------------------------------
             # TAB 4 (MASTER): GERENCIAR SETORES E DE/PARA
             # ------------------------------------------
