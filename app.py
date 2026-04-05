@@ -13,7 +13,7 @@ st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="�
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
 SENHA_ACESSO = "Almoxarifado"
-SENHA_ZERAR_ESTOQUE = "admin123"
+SENHA_ZERAR_ESTOQUE = "admin@123"
 DB_NAME = 'estoque.db'
 LIMITE_PESSOAS = 40
 TEMPO_INATIVIDADE = 1
@@ -42,7 +42,7 @@ def init_db():
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS estoque
-                     (Codigo TEXT, Descricao TEXT, Quantidade REAL, CC TEXT)''')
+                     (Codigo TEXT, Descricao TEXT, Quantidade INTEGER, CC TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS acessos
                      (sessao_id TEXT PRIMARY KEY, ultimo_clique TIMESTAMP)''')
         c.execute('''CREATE TABLE IF NOT EXISTS centros_custo
@@ -53,6 +53,8 @@ init_db()
 def carregar_estoque():
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         df = pd.read_sql_query("SELECT * FROM estoque", conn)
+        if not df.empty:
+            df['Quantidade'] = df['Quantidade'].astype(int) # Remove casas decimais da tabela
     return df
 
 @st.cache_data
@@ -135,7 +137,6 @@ lista_cc = carregar_ccs()
 st.sidebar.title("Navegação")
 menu = st.sidebar.radio("Ir para:", ["📊 Consulta", "🔒 Almoxarifado"])
 
-# Contador de pessoas movido para a barra lateral
 st.sidebar.divider()
 st.sidebar.markdown(f"🟢 **{total_ativos}/{LIMITE_PESSOAS}** pessoas online")
 
@@ -156,7 +157,6 @@ if menu == "📊 Consulta":
     total_itens   = str(df_ativos['Codigo'].nunique())     if not df_ativos.empty else "0"
     total_setores = str(df_ativos['CC'].nunique())         if not df_ativos.empty else "0"
 
-    # Header reestruturado (Sem contador e com ajuste de peso visual dos logos)
     components.html(f"""
     <!DOCTYPE html>
     <html>
@@ -179,9 +179,9 @@ if menu == "📊 Consulta":
       .title-box {{ text-align: center; padding: 0 20px; }}
       .right-logo {{ justify-self: end; display: flex; align-items: center; }}
       
-      /* Ajuste fino independente para equilibrar o peso visual dos dois logos */
-      .img-logo1 {{ height: 40px; width: auto; max-width: 160px; object-fit: contain; mix-blend-mode: darken; }}
-      .img-logo2 {{ height: 55px; width: auto; max-width: 160px; object-fit: contain; mix-blend-mode: darken; }}
+      /* Logo 1 (Brastel) MAIOR, Logo 2 (Engia) MENOR */
+      .img-logo1 {{ height: 60px; width: auto; max-width: 180px; object-fit: contain; mix-blend-mode: darken; }}
+      .img-logo2 {{ height: 35px; width: auto; max-width: 120px; object-fit: contain; mix-blend-mode: darken; }}
       
       .title-box h1 {{ font-size: 1.8rem; font-weight: 700; color: #102a43; letter-spacing: 0.02em; line-height: 1.15; }}
       .title-box p {{ font-size: 0.75rem; color: #334e68; margin-top: 5px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; }}
@@ -203,8 +203,8 @@ if menu == "📊 Consulta":
         .right-logo {{ grid-column: 2; grid-row: 1; justify-self: end; }}
         .title-box {{ grid-column: 1 / 3; grid-row: 2; padding: 10px 0 0 0; }}
         
-        .img-logo1 {{ height: 30px; }}
-        .img-logo2 {{ height: 40px; }}
+        .img-logo1 {{ height: 45px; }}
+        .img-logo2 {{ height: 28px; }}
         .title-box h1 {{ font-size: 1.3rem; }}
         
         .metrics-grid {{ grid-template-columns: 1fr; gap: 8px; }}
@@ -263,19 +263,10 @@ else:
 
     if senha == SENHA_ACESSO or senha == SENHA_ZERAR_ESTOQUE:
         
-        # Abas comuns
-        abas_nomes = [
-            "📝 Registro Individual",
-            "📤 Carga em Massa"
-        ]
+        abas_nomes = ["📝 Registro Individual", "📤 Carga em Massa"]
         
-        # Abas secretas (visíveis apenas com a Senha Master)
         if senha == SENHA_ZERAR_ESTOQUE:
-            abas_nomes.extend([
-                "🗑️ Excluir Item (Master)",
-                "🏢 Gerenciar Setores (Master)",
-                "⚠️ Limpar Dados (Master)"
-            ])
+            abas_nomes.extend(["🗑️ Excluir Item (Master)", "🏢 Gerenciar Setores (Master)", "⚠️ Limpar Dados (Master)"])
 
         abas = st.tabs(abas_nomes)
 
@@ -291,7 +282,8 @@ else:
                 c3, c4, c5 = st.columns([2, 2, 1])
                 cc_sel = c3.selectbox("Setor (Centro de Custo):", lista_cc)
                 op     = c4.selectbox("Operação:", ["Entrada", "Saída"])
-                qtd    = c5.number_input("Qtd:", min_value=1.0)
+                # Campo de Quantidade forçado para número inteiro
+                qtd    = c5.number_input("Qtd:", min_value=1, step=1, format="%d")
 
                 if st.form_submit_button("✅ Confirmar"):
                     if not cod:
@@ -312,11 +304,11 @@ else:
                                 
                                 if res:
                                     if op == "Saída" and res[0] < qtd:
-                                        st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]:.0f} unidades.")
+                                        st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]} unidades.")
                                     else:
                                         novo = (res[0] + qtd) if op == "Entrada" else (res[0] - qtd)
                                         cur.execute("UPDATE estoque SET Quantidade=? WHERE Codigo=? AND CC=?", (novo, cod, cc_sel))
-                                        st.success(f"✅ {op} registrada. Saldo atualizado: {novo:.0f}")
+                                        st.success(f"✅ {op} registrada. Saldo atualizado: {novo}")
                                         st.cache_data.clear()
                                 else:
                                     if op == "Saída":
@@ -349,6 +341,7 @@ else:
                                     qtd_r = pd.to_numeric(row['Quantidade'], errors='coerce')
                                     
                                     if pd.isna(qtd_r) or qtd_r <= 0: continue
+                                    qtd_r = int(qtd_r) # Garante número inteiro
                                     if not cod_r or cod_r == 'nan': continue
                                     
                                     cur.execute("SELECT DISTINCT Descricao FROM estoque WHERE Codigo=?", (cod_r,))
@@ -374,9 +367,6 @@ else:
         # ==========================================
         if senha == SENHA_ZERAR_ESTOQUE:
             
-            # ------------------------------------------
-            # TAB 3 (MASTER): EXCLUIR ITEM ESPECÍFICO
-            # ------------------------------------------
             with abas[2]:
                 st.subheader("🗑️ Excluir Item do Banco")
                 st.warning("Esta ação apagará o código e seu histórico de estoque de todos os setores.")
@@ -395,9 +385,6 @@ else:
                                     st.error("⛔ Código não encontrado no banco de dados.")
                             st.cache_data.clear()
 
-            # ------------------------------------------
-            # TAB 4 (MASTER): GERENCIAR SETORES E DE/PARA
-            # ------------------------------------------
             with abas[3]:
                 c_sec1, c_sec2 = st.columns(2)
                 
@@ -446,9 +433,6 @@ else:
                         st.cache_data.clear()
                         st.rerun()
 
-            # ------------------------------------------
-            # TAB 5 (MASTER): LIMPAR DADOS
-            # ------------------------------------------
             with abas[4]:
                 st.subheader("⚠️ Área de Risco - Acesso Master")
                 
