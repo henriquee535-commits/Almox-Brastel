@@ -1,7 +1,8 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import uuid
 from datetime import datetime, timedelta
 import io
@@ -17,11 +18,11 @@ st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="�
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
 SENHA_ACESSO = st.secrets["SENHA_ACESSO"]
 SENHA_ZERAR_ESTOQUE = st.secrets["SENHA_ZERAR_ESTOQUE"]
-DB_NAME = 'estoque.db'
+DATABASE_URL = st.secrets["DATABASE_URL"]
 LIMITE_PESSOAS = 40
 TEMPO_INATIVIDADE = 1
 
-# --- CSS GLOBAL + RESPONSIVO ---
+# --- CSS GLOBAL ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&display=swap');
@@ -36,6 +37,104 @@ html, body, [class*="css"] { font-family: 'Sora', sans-serif; }
 .stAlert { border-radius: 10px; }
 </style>
 """, unsafe_allow_html=True)
+
+# --- CONEXÃO COM SUPABASE ---
+def get_conn():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
+# --- BANCO DE DADOS ---
+def init_db():
+    with get_conn() as conn:
+        with conn.cursor() as c:
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS estoque (
+                    id SERIAL PRIMARY KEY,
+                    "Codigo" TEXT,
+                    "Descricao" TEXT,
+                    "Quantidade" INTEGER,
+                    "CC" TEXT
+                )
+            ''')
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS acessos (
+                    sessao_id TEXT PRIMARY KEY,
+                    ultimo_clique TIMESTAMP
+                )
+            ''')
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS centros_custo (
+                    nome TEXT PRIMARY KEY
+                )
+            ''')
+        conn.commit()
+
+init_db()
+
+def carregar_estoque():
+    with get_conn() as conn:
+        with conn.cursor() as c:
+            c.execute('SELECT "Codigo", "Descricao", "Quantidade", "CC" FROM estoque')
+            rows = c.fetchall()
+    df = pd.DataFrame(rows, columns=['Codigo', 'Descricao', 'Quantidade', 'CC'])
+    if not df.empty:
+        df['Quantidade'] = df['Quantidade'].astype(int)
+    return df
+
+@st.cache_data
+def carregar_ccs():
+    with get_conn() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT nome FROM centros_custo ORDER BY nome")
+            rows = c.fetchall()
+    lista_cc = [r['nome'] for r in rows]
+    if not lista_cc:
+        lista_cc = ["Centro de Custo Geral"]
+        with get_conn() as conn:
+            with conn.cursor() as c:
+                c.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", ("Centro de Custo Geral",))
+            conn.commit()
+    return lista_cc
+
+def buscar_descricao_por_codigo(cod):
+    with get_conn() as conn:
+        with conn.cursor() as c:
+            c.execute('SELECT DISTINCT "Descricao" FROM estoque WHERE "Codigo" = %s', (cod,))
+            result = c.fetchone()
+    return result['Descricao'] if result else None
+
+def gerar_template_xlsx():
+    template_df = pd.DataFrame({
+        'Codigo': ['ABC001', 'ABC002'],
+        'Descricao': ['Parafuso M8', 'Cabo Elétrico 2,5mm'],
+        'Quantidade': [100, 50],
+        'CC': ['LIVRE DESTINAÇÃO', 'LIVRE DESTINAÇÃO']
+    })
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        template_df.to_excel(writer, index=False, sheet_name='Inventario')
+    return buf.getvalue()
+
+def gerar_template_depara():
+    df = pd.DataFrame({
+        'De': ['Centro de Custo Antigo 1', 'Centro de Custo Antigo 2'],
+        'Para': ['Centro de Custo Novo 1', 'Centro de Custo Novo 2']
+    })
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='DePara')
+    return buf.getvalue()
+
+def logo_para_base64(path):
+    for tentativa in [path, path.replace('.png', '.jpg'), path.replace('.png', '.jpeg')]:
+        try:
+            with open(tentativa, "rb") as f:
+                data = base64.b64encode(f.read()).decode()
+            ext = tentativa.rsplit('.', 1)[-1].lower()
+            mime = 'image/png' if ext == 'png' else 'image/jpeg'
+            return f"data:{mime};base64,{data}"
+        except FileNotFoundError:
+            continue
+    return None
 
 # --- SISTEMA DE APROVAÇÃO POR E-MAIL ---
 def aprovar_acao_master(chave, descricao_acao):
@@ -56,8 +155,8 @@ def aprovar_acao_master(chave, descricao_acao):
         codigo = str(random.randint(100000, 999999))
         st.session_state[f"token_{chave}"] = codigo
 
-        remetente   = st.secrets["email"]["remetente"]
-        senha_email = st.secrets["email"]["senha"]
+        remetente    = st.secrets["email"]["remetente"]
+        senha_email  = st.secrets["email"]["senha"]
         destinatario = st.secrets["email"]["destinatario"]
 
         msg = MIMEText(
@@ -90,87 +189,24 @@ def aprovar_acao_master(chave, descricao_acao):
                 st.error("⛔ Código incorreto!")
     return False
 
-# --- BANCO DE DADOS ---
-def init_db():
-    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS estoque (Codigo TEXT, Descricao TEXT, Quantidade INTEGER, CC TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS acessos (sessao_id TEXT PRIMARY KEY, ultimo_clique TIMESTAMP)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS centros_custo (nome TEXT PRIMARY KEY)''')
-init_db()
-
-def carregar_estoque():
-    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        df = pd.read_sql_query("SELECT * FROM estoque", conn)
-        if not df.empty:
-            df['Quantidade'] = df['Quantidade'].astype(int)
-    return df
-
-@st.cache_data
-def carregar_ccs():
-    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        df_cc = pd.read_sql_query("SELECT nome FROM centros_custo ORDER BY nome", conn)
-        lista_cc = df_cc['nome'].tolist()
-        if not lista_cc:
-            try:
-                df_bd = pd.read_excel(ARQUIVO_PLANILHA, sheet_name='BD', engine='openpyxl')
-                lista_cc = df_bd['Centro de Custo'].dropna().unique().tolist()
-                c = conn.cursor()
-                for cc in lista_cc:
-                    c.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc,))
-            except:
-                lista_cc = ["Centro de Custo Geral"]
-                c = conn.cursor()
-                c.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", ("Centro de Custo Geral",))
-    return lista_cc
-
-def buscar_descricao_por_codigo(cod):
-    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-        c = conn.cursor()
-        c.execute("SELECT DISTINCT Descricao FROM estoque WHERE Codigo=?", (cod,))
-        result = c.fetchone()
-    return result[0] if result else None
-
-def gerar_template_xlsx():
-    template_df = pd.DataFrame({'Codigo': ['ABC001', 'ABC002'], 'Descricao': ['Parafuso M8', 'Cabo Elétrico 2,5mm'], 'Quantidade': [100, 50], 'CC': ['LIVRE DESTINAÇÃO', 'LIVRE DESTINAÇÃO']})
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        template_df.to_excel(writer, index=False, sheet_name='Inventario')
-    return buf.getvalue()
-
-def gerar_template_depara():
-    df = pd.DataFrame({'De': ['Centro de Custo Antigo 1', 'Centro de Custo Antigo 2'], 'Para': ['Centro de Custo Novo 1', 'Centro de Custo Novo 2']})
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='DePara')
-    return buf.getvalue()
-
-def logo_para_base64(path):
-    for tentativa in [path, path.replace('.png', '.jpg'), path.replace('.png', '.jpeg')]:
-        try:
-            with open(tentativa, "rb") as f:
-                data = base64.b64encode(f.read()).decode()
-            ext = tentativa.rsplit('.', 1)[-1].lower()
-            mime = 'image/png' if ext == 'png' else 'image/jpeg'
-            return f"data:{mime};base64,{data}"
-        except FileNotFoundError:
-            continue
-    return None
-
 # --- CONTROLE DE ACESSO E LIMITE DE USUÁRIOS ---
 if 'sessao_id' not in st.session_state:
     st.session_state.sessao_id = str(uuid.uuid4())
 
-with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-    c = conn.cursor()
-    tempo_limite = datetime.now() - timedelta(minutes=TEMPO_INATIVIDADE)
-    c.execute("DELETE FROM acessos WHERE ultimo_clique < ?", (tempo_limite,))
-    c.execute("INSERT OR REPLACE INTO acessos VALUES (?, ?)", (st.session_state.sessao_id, datetime.now()))
-    c.execute("SELECT COUNT(*) FROM acessos")
-    total_ativos = c.fetchone()[0]
+with get_conn() as conn:
+    with conn.cursor() as c:
+        tempo_limite = datetime.now() - timedelta(minutes=TEMPO_INATIVIDADE)
+        c.execute("DELETE FROM acessos WHERE ultimo_clique < %s", (tempo_limite,))
+        c.execute("""
+            INSERT INTO acessos (sessao_id, ultimo_clique) VALUES (%s, %s)
+            ON CONFLICT (sessao_id) DO UPDATE SET ultimo_clique = EXCLUDED.ultimo_clique
+        """, (st.session_state.sessao_id, datetime.now()))
+        c.execute("SELECT COUNT(*) as total FROM acessos")
+        total_ativos = c.fetchone()['total']
+    conn.commit()
 
 if total_ativos > LIMITE_PESSOAS:
-    st.error(f"⚠️ O sistema está lotado no momento ({total_ativos}/{LIMITE_PESSOAS} usuários). Por favor, tente novamente em 1 minuto.")
+    st.error(f"⚠️ O sistema está lotado ({total_ativos}/{LIMITE_PESSOAS} usuários). Tente novamente em 1 minuto.")
     st.stop()
 
 # --- NAVEGAÇÃO ---
@@ -192,9 +228,9 @@ if menu == "📊 Consulta":
     img2 = f'<img class="img-logo2" src="{src2}">' if src2 else '<span style="color:#102a43;font-weight:700;">LOGO 2</span>'
 
     df_ativos = df[df['Quantidade'] > 0]
-    total_pecas   = f"{df_ativos['Quantidade'].sum():.0f}" if not df_ativos.empty else "0"
-    total_itens   = str(df_ativos['Codigo'].nunique())     if not df_ativos.empty else "0"
-    total_cc      = str(df_ativos['CC'].nunique())         if not df_ativos.empty else "0"
+    total_pecas = f"{df_ativos['Quantidade'].sum():.0f}" if not df_ativos.empty else "0"
+    total_itens = str(df_ativos['Codigo'].nunique())    if not df_ativos.empty else "0"
+    total_cc    = str(df_ativos['CC'].nunique())        if not df_ativos.empty else "0"
 
     components.html(f"""
     <!DOCTYPE html>
@@ -232,16 +268,17 @@ if menu == "📊 Consulta":
     st.divider()
 
     c_busca, c_filtro = st.columns([2, 1])
-    busca = c_busca.text_input("🔍 Pesquisar Código ou Descrição:")
+    busca     = c_busca.text_input("🔍 Pesquisar Código ou Descrição:")
     cc_filtro = c_filtro.selectbox("🏢 Filtrar por Centro de Custo:", ["Todos"] + lista_cc)
 
     df_filt = df_ativos.copy()
-
     if cc_filtro != "Todos":
         df_filt = df_filt[df_filt['CC'] == cc_filtro]
-
     if busca:
-        df_filt = df_filt[df_filt['Codigo'].astype(str).str.contains(busca, case=False) | df_filt['Descricao'].str.contains(busca, case=False, na=False)]
+        df_filt = df_filt[
+            df_filt['Codigo'].astype(str).str.contains(busca, case=False) |
+            df_filt['Descricao'].str.contains(busca, case=False, na=False)
+        ]
 
     st.dataframe(df_filt, use_container_width=True, hide_index=True)
 
@@ -276,34 +313,35 @@ else:
                     else:
                         desc_existente = buscar_descricao_por_codigo(cod)
                         if not desc_existente and not desc_input:
-                            st.error("⛔ A Descrição é OBRIGATÓRIA para cadastrar um novo item no sistema.")
+                            st.error("⛔ A Descrição é OBRIGATÓRIA para cadastrar um novo item.")
                         elif desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
-                            st.error(f"⛔ Conflito de Descrição! O código **{cod}** já está cadastrado com:\n\n**\"{desc_existente}\"**")
+                            st.error(f"⛔ Conflito! O código **{cod}** já está cadastrado como:\n\n**\"{desc_existente}\"**")
                         else:
                             desc_final = desc_existente if desc_existente else desc_input
-                            with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                                cur = conn.cursor()
-                                cur.execute("SELECT Quantidade FROM estoque WHERE Codigo=? AND CC=?", (cod, cc_sel))
-                                res = cur.fetchone()
-                                if res:
-                                    if op == "Saída":
-                                        if res[0] < qtd:
-                                            st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]} unidades.")
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute('SELECT "Quantidade" FROM estoque WHERE "Codigo"=%s AND "CC"=%s', (cod, cc_sel))
+                                    res = cur.fetchone()
+                                    if res:
+                                        if op == "Saída":
+                                            if res['Quantidade'] < qtd:
+                                                st.error(f"⛔ FALTA DE ESTOQUE! Saldo atual: {res['Quantidade']} unidades.")
+                                            else:
+                                                cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, cod, cc_sel))
+                                                st.success(f"✅ Saída registrada. Saldo: {res['Quantidade'] - qtd}")
+                                                st.cache_data.clear()
                                         else:
-                                            cur.execute("UPDATE estoque SET Quantidade = Quantidade - ? WHERE Codigo=? AND CC=?", (qtd, cod, cc_sel))
-                                            st.success(f"✅ Saída registrada. Saldo atualizado: {res[0] - qtd}")
+                                            cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, cod, cc_sel))
+                                            st.success(f"✅ Entrada registrada. Saldo: {res['Quantidade'] + qtd}")
                                             st.cache_data.clear()
                                     else:
-                                        cur.execute("UPDATE estoque SET Quantidade = Quantidade + ? WHERE Codigo=? AND CC=?", (qtd, cod, cc_sel))
-                                        st.success(f"✅ Entrada registrada. Saldo atualizado: {res[0] + qtd}")
-                                        st.cache_data.clear()
-                                else:
-                                    if op == "Saída":
-                                        st.error("⛔ ITEM NÃO ENCONTRADO! Não é possível realizar a saída de um item que não existe neste Centro de Custo.")
-                                    else:
-                                        cur.execute("INSERT INTO estoque VALUES (?,?,?,?)", (cod, desc_final, qtd, cc_sel))
-                                        st.success("✅ Item novo cadastrado com sucesso.")
-                                        st.cache_data.clear()
+                                        if op == "Saída":
+                                            st.error("⛔ ITEM NÃO ENCONTRADO neste Centro de Custo.")
+                                        else:
+                                            cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (cod, desc_final, qtd, cc_sel))
+                                            st.success("✅ Item novo cadastrado com sucesso.")
+                                            st.cache_data.clear()
+                                conn.commit()
 
         # TAB 2: CARGA EM MASSA
         with abas[1]:
@@ -319,43 +357,46 @@ else:
                         st.error(f"⛔ Colunas ausentes: {', '.join(faltando)}")
                     else:
                         if st.button("🚀 Processar Importação"):
-                            df_upload['Codigo'] = df_upload['Codigo'].astype(str).str.strip()
-                            df_upload['Descricao'] = df_upload['Descricao'].astype(str).str.strip()
-                            df_upload['CC'] = df_upload['CC'].astype(str).str.strip()
+                            df_upload['Codigo']     = df_upload['Codigo'].astype(str).str.strip()
+                            df_upload['Descricao']  = df_upload['Descricao'].astype(str).str.strip()
+                            df_upload['CC']         = df_upload['CC'].astype(str).str.strip()
                             df_upload['Quantidade'] = pd.to_numeric(df_upload['Quantidade'], errors='coerce')
                             df_upload = df_upload.dropna(subset=['Quantidade'])
                             df_upload = df_upload[df_upload['Quantidade'] > 0]
                             df_upload['Quantidade'] = df_upload['Quantidade'].astype(int)
                             df_upload = df_upload[(df_upload['Codigo'] != 'nan') & (df_upload['Codigo'] != '')]
 
-                            ccs_arquivo = set(df_upload['CC'].unique())
-                            ccs_existentes = set(lista_cc)
-                            ccs_invalidos = ccs_arquivo - ccs_existentes
-
+                            ccs_invalidos = set(df_upload['CC'].unique()) - set(lista_cc)
                             if ccs_invalidos:
-                                st.error(f"⛔ IMPORTAÇÃO BLOQUEADA! Centros de Custo não encontrados: **{', '.join(ccs_invalidos)}**.")
+                                st.error(f"⛔ IMPORTAÇÃO BLOQUEADA! CCs não encontrados: **{', '.join(ccs_invalidos)}**.")
                             else:
-                                with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                                    cur = conn.cursor()
-                                    cur.execute("SELECT Codigo, CC FROM estoque")
-                                    db_set = set((row[0], row[1]) for row in cur.fetchall())
+                                with get_conn() as conn:
+                                    with conn.cursor() as cur:
+                                        cur.execute('SELECT "Codigo", "CC" FROM estoque')
+                                        db_set = set((r['Codigo'], r['CC']) for r in cur.fetchall())
 
-                                    inserts, updates = [], []
+                                        inserts, updates = [], []
+                                        for _, row in df_upload.iterrows():
+                                            cod_r  = row['Codigo']
+                                            desc_r = row['Descricao']
+                                            cc_r   = row['CC']
+                                            qtd_r  = row['Quantidade']
 
-                                    for _, row in df_upload.iterrows():
-                                        cod_r, desc_r, cc_r, qtd_r = row['Codigo'], row['Descricao'], row['CC'], row['Quantidade']
-                                        if (cod_r, cc_r) not in db_set and (not desc_r or desc_r.lower() == 'nan'):
-                                            continue
-                                        if (cod_r, cc_r) in db_set:
-                                            updates.append((qtd_r, cod_r, cc_r))
-                                        else:
-                                            inserts.append((cod_r, desc_r, qtd_r, cc_r))
-                                            db_set.add((cod_r, cc_r))
+                                            if (cod_r, cc_r) not in db_set and (not desc_r or desc_r.lower() == 'nan'):
+                                                continue
+                                            if (cod_r, cc_r) in db_set:
+                                                updates.append((qtd_r, cod_r, cc_r))
+                                            else:
+                                                inserts.append((cod_r, desc_r, qtd_r, cc_r))
+                                                db_set.add((cod_r, cc_r))
 
-                                    if inserts: cur.executemany("INSERT INTO estoque VALUES (?,?,?,?)", inserts)
-                                    if updates: cur.executemany("UPDATE estoque SET Quantidade = Quantidade + ? WHERE Codigo=? AND CC=?", updates)
+                                        if inserts:
+                                            cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)', inserts)
+                                        if updates:
+                                            cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', updates)
+                                    conn.commit()
 
-                                st.success(f"✅ Importação concluída! {len(inserts)} novos itens, {len(updates)} atualizações.")
+                                st.success(f"✅ Importação concluída! {len(inserts)} novos, {len(updates)} atualizados.")
                                 st.cache_data.clear()
                                 st.rerun()
                 except Exception as e:
@@ -365,27 +406,30 @@ else:
         if senha == SENHA_ZERAR_ESTOQUE:
             with abas[2]:
                 st.subheader("🗑️ Excluir Item do Banco")
-                st.warning("Esta ação apagará o código e seu histórico de estoque de todos os CCs.")
+                st.warning("Esta ação apagará o código de todos os CCs.")
                 cod_excluir = st.text_input("Digite o Código do item que deseja apagar:")
                 if cod_excluir and aprovar_acao_master("del_item", f"Excluir código {cod_excluir}"):
-                    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                        cur = conn.cursor()
-                        cur.execute("SELECT * FROM estoque WHERE Codigo=?", (cod_excluir,))
-                        if cur.fetchone():
-                            cur.execute("DELETE FROM estoque WHERE Codigo=?", (cod_excluir,))
-                            st.success(f"✅ Registros do código **{cod_excluir}** apagados!")
-                        else:
-                            st.error("⛔ Código não encontrado.")
-                        st.cache_data.clear()
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute('SELECT * FROM estoque WHERE "Codigo"=%s', (cod_excluir,))
+                            if cur.fetchone():
+                                cur.execute('DELETE FROM estoque WHERE "Codigo"=%s', (cod_excluir,))
+                                st.success(f"✅ Código **{cod_excluir}** apagado!")
+                            else:
+                                st.error("⛔ Código não encontrado.")
+                        conn.commit()
+                    st.cache_data.clear()
 
             with abas[3]:
                 c_sec1, c_sec2 = st.columns(2)
                 with c_sec1:
                     st.subheader("➕ Novo Centro de Custo")
                     novo_cc = st.text_input("Nome:")
-                    if novo_cc and aprovar_acao_master("new_cc", f"Criar Centro de Custo: {novo_cc}"):
-                        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                            conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (novo_cc,))
+                    if novo_cc and aprovar_acao_master("new_cc", f"Criar CC: {novo_cc}"):
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (novo_cc,))
+                            conn.commit()
                         st.success("Centro de Custo cadastrado!")
                         st.cache_data.clear()
                         st.rerun()
@@ -393,12 +437,14 @@ else:
                 with c_sec2:
                     st.subheader("🔄 De/Para (Individual)")
                     cc_antigo = st.selectbox("De:", lista_cc)
-                    cc_novo = st.text_input("Para (Novo Nome):")
-                    if cc_novo and cc_antigo and aprovar_acao_master("rename_cc", f"Renomear {cc_antigo} para {cc_novo}"):
-                        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                            conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (cc_novo,))
-                            conn.execute("UPDATE estoque SET CC = ? WHERE CC = ?", (cc_novo, cc_antigo))
-                            conn.execute("DELETE FROM centros_custo WHERE nome = ?", (cc_antigo,))
+                    cc_novo   = st.text_input("Para (Novo Nome):")
+                    if cc_novo and cc_antigo and aprovar_acao_master("rename_cc", f"Renomear {cc_antigo} → {cc_novo}"):
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (cc_novo,))
+                                cur.execute('UPDATE estoque SET "CC" = %s WHERE "CC" = %s', (cc_novo, cc_antigo))
+                                cur.execute("DELETE FROM centros_custo WHERE nome = %s", (cc_antigo,))
+                            conn.commit()
                         st.success("Centro de Custo renomeado!")
                         st.cache_data.clear()
                         st.rerun()
@@ -408,16 +454,19 @@ else:
                 st.download_button("⬇️ Template De/Para", gerar_template_depara(), "template_depara.xlsx")
                 arq_depara = st.file_uploader("Arquivo De/Para (.xlsx):", type=["xlsx"])
 
-                if arq_depara and aprovar_acao_master("depara_massa", "Processar planilha De/Para em massa"):
+                if arq_depara and aprovar_acao_master("depara_massa", "Processar De/Para em massa"):
                     df_dp = pd.read_excel(arq_depara)
                     if 'De' in df_dp.columns and 'Para' in df_dp.columns:
-                        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                            for _, row in df_dp.iterrows():
-                                de, para = str(row['De']).strip(), str(row['Para']).strip()
-                                if de != 'nan' and para != 'nan':
-                                    conn.execute("INSERT OR IGNORE INTO centros_custo VALUES (?)", (para,))
-                                    conn.execute("UPDATE estoque SET CC = ? WHERE CC = ?", (para, de))
-                                    conn.execute("DELETE FROM centros_custo WHERE nome = ?", (de,))
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                for _, row in df_dp.iterrows():
+                                    de   = str(row['De']).strip()
+                                    para = str(row['Para']).strip()
+                                    if de != 'nan' and para != 'nan':
+                                        cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (para,))
+                                        cur.execute('UPDATE estoque SET "CC" = %s WHERE "CC" = %s', (para, de))
+                                        cur.execute("DELETE FROM centros_custo WHERE nome = %s", (de,))
+                            conn.commit()
                         st.success("De/Para em massa concluído!")
                         st.cache_data.clear()
                         st.rerun()
@@ -430,12 +479,14 @@ else:
                 ])
 
                 if aprovar_acao_master("limpeza", f"Limpeza de Banco: {opcao}"):
-                    with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
-                        if "1️⃣" in opcao:
-                            conn.execute("UPDATE estoque SET Quantidade = 0")
-                            st.success("Quantidades zeradas com sucesso!")
-                        else:
-                            conn.execute("DELETE FROM estoque")
-                            st.success("Todos os itens apagados do banco!")
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            if "1️⃣" in opcao:
+                                cur.execute('UPDATE estoque SET "Quantidade" = 0')
+                                st.success("Quantidades zeradas com sucesso!")
+                            else:
+                                cur.execute("DELETE FROM estoque")
+                                st.success("Todos os itens apagados!")
+                        conn.commit()
                     st.cache_data.clear()
                     st.rerun()
