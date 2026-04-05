@@ -13,10 +13,10 @@ import random
 # 1. CONFIGURAÇÃO DA PÁGINA
 st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="📦")
 
-# --- CONFIGURAÇÕES ABERTAS ---
+# --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
-SENHA_ACESSO = "Almoxarifado"
-SENHA_ZERAR_ESTOQUE = "admin123"
+SENHA_ACESSO = st.secrets["SENHA_ACESSO"]
+SENHA_ZERAR_ESTOQUE = st.secrets["SENHA_ZERAR_ESTOQUE"]
 DB_NAME = 'estoque.db'
 LIMITE_PESSOAS = 40
 TEMPO_INATIVIDADE = 1
@@ -37,32 +37,48 @@ html, body, [class*="css"] { font-family: 'Sora', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- SISTEMA DE APROVAÇÃO POR E-MAIL (OUTLOOK) ---
+# --- SISTEMA DE APROVAÇÃO POR E-MAIL ---
 def aprovar_acao_master(chave, descricao_acao):
     if f"token_{chave}" not in st.session_state:
         st.session_state[f"token_{chave}"] = None
 
+    email_solicitante = st.text_input(
+        "📧 Seu e-mail (para identificação):",
+        key=f"email_{chave}",
+        placeholder="seunome@brastelnet.com.br"
+    )
+
     if st.button(f"📩 Solicitar Liberação: {descricao_acao}", key=f"req_{chave}"):
+        if not email_solicitante:
+            st.error("⛔ Informe seu e-mail antes de solicitar.")
+            return False
+
         codigo = str(random.randint(100000, 999999))
         st.session_state[f"token_{chave}"] = codigo
-        
-        remetente = "eduardo.sousa@brastelnet.com.br"
-        senha_email = "Brastel25*"
-        destinatario = "eduardo.sousa@brastelnet.com.br"
-        
-        msg = MIMEText(f"O administrador solicitou a seguinte ação no sistema:\n\nAÇÃO: {descricao_acao}\n\nPara autorizar, informe o código abaixo no sistema:\nCÓDIGO: {codigo}")
+
+        remetente   = st.secrets["email"]["remetente"]
+        senha_email = st.secrets["email"]["senha"]
+        destinatario = st.secrets["email"]["destinatario"]
+
+        msg = MIMEText(
+            f"Solicitação de ação no sistema de Almoxarifado:\n\n"
+            f"SOLICITANTE: {email_solicitante}\n"
+            f"AÇÃO: {descricao_acao}\n\n"
+            f"Para autorizar, informe o código abaixo:\n"
+            f"CÓDIGO: {codigo}"
+        )
         msg['Subject'] = 'Aprovação de Sistema - Almoxarifado'
         msg['From'] = remetente
         msg['To'] = destinatario
-        
+
         try:
             with smtplib.SMTP('smtp.office365.com', 587) as server:
                 server.starttls()
                 server.login(remetente, senha_email)
                 server.sendmail(remetente, [destinatario], msg.as_string())
-            st.info("✅ E-mail de autorização enviado para Eduardo Sousa - Controladoria! Solicite a ele o código gerado.")
+            st.info("✅ Solicitação enviada! Aguarde o código de autorização.")
         except Exception as e:
-            st.error(f"Erro ao enviar e-mail. ({e})")
+            st.error(f"Erro ao enviar e-mail: {e}")
 
     if st.session_state[f"token_{chave}"]:
         token_input = st.text_input("🔑 Digite o Código de Autorização:", key=f"inp_{chave}")
@@ -174,7 +190,7 @@ if menu == "📊 Consulta":
     src2 = logo_para_base64("logo2.png")
     img1 = f'<img class="img-logo1" src="{src1}">' if src1 else '<span style="color:#102a43;font-weight:700;">LOGO 1</span>'
     img2 = f'<img class="img-logo2" src="{src2}">' if src2 else '<span style="color:#102a43;font-weight:700;">LOGO 2</span>'
-    
+
     df_ativos = df[df['Quantidade'] > 0]
     total_pecas   = f"{df_ativos['Quantidade'].sum():.0f}" if not df_ativos.empty else "0"
     total_itens   = str(df_ativos['Codigo'].nunique())     if not df_ativos.empty else "0"
@@ -214,19 +230,19 @@ if menu == "📊 Consulta":
     """, height=260, scrolling=False)
 
     st.divider()
-    
+
     c_busca, c_filtro = st.columns([2, 1])
     busca = c_busca.text_input("🔍 Pesquisar Código ou Descrição:")
     cc_filtro = c_filtro.selectbox("🏢 Filtrar por Centro de Custo:", ["Todos"] + lista_cc)
 
-    df_filt = df_ativos.copy() 
-    
+    df_filt = df_ativos.copy()
+
     if cc_filtro != "Todos":
         df_filt = df_filt[df_filt['CC'] == cc_filtro]
-        
+
     if busca:
         df_filt = df_filt[df_filt['Codigo'].astype(str).str.contains(busca, case=False) | df_filt['Descricao'].str.contains(busca, case=False, na=False)]
-        
+
     st.dataframe(df_filt, use_container_width=True, hide_index=True)
 
 # ==========================================
@@ -259,7 +275,6 @@ else:
                         st.error("⛔ Informe o Código do item.")
                     else:
                         desc_existente = buscar_descricao_por_codigo(cod)
-                        # Bloqueio de cadastro sem descrição e geração de alerta
                         if not desc_existente and not desc_input:
                             st.error("⛔ A Descrição é OBRIGATÓRIA para cadastrar um novo item no sistema.")
                         elif desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
@@ -272,9 +287,8 @@ else:
                                 res = cur.fetchone()
                                 if res:
                                     if op == "Saída":
-                                        # Sinal de falta de item
                                         if res[0] < qtd:
-                                            st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]} unidades. Não é possível realizar a saída.")
+                                            st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]} unidades.")
                                         else:
                                             cur.execute("UPDATE estoque SET Quantidade = Quantidade - ? WHERE Codigo=? AND CC=?", (qtd, cod, cc_sel))
                                             st.success(f"✅ Saída registrada. Saldo atualizado: {res[0] - qtd}")
@@ -309,7 +323,6 @@ else:
                             df_upload['Descricao'] = df_upload['Descricao'].astype(str).str.strip()
                             df_upload['CC'] = df_upload['CC'].astype(str).str.strip()
                             df_upload['Quantidade'] = pd.to_numeric(df_upload['Quantidade'], errors='coerce')
-                            
                             df_upload = df_upload.dropna(subset=['Quantidade'])
                             df_upload = df_upload[df_upload['Quantidade'] > 0]
                             df_upload['Quantidade'] = df_upload['Quantidade'].astype(int)
@@ -320,7 +333,7 @@ else:
                             ccs_invalidos = ccs_arquivo - ccs_existentes
 
                             if ccs_invalidos:
-                                st.error(f"⛔ IMPORTAÇÃO BLOQUEADA! Os seguintes Centros de Custo na planilha não existem no sistema: **{', '.join(ccs_invalidos)}**.\nCrie-os primeiro na aba Master ou corrija a planilha.")
+                                st.error(f"⛔ IMPORTAÇÃO BLOQUEADA! Centros de Custo não encontrados: **{', '.join(ccs_invalidos)}**.")
                             else:
                                 with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                                     cur = conn.cursor()
@@ -331,19 +344,17 @@ else:
 
                                     for _, row in df_upload.iterrows():
                                         cod_r, desc_r, cc_r, qtd_r = row['Codigo'], row['Descricao'], row['CC'], row['Quantidade']
-                                        
                                         if (cod_r, cc_r) not in db_set and (not desc_r or desc_r.lower() == 'nan'):
                                             continue
-                                        
                                         if (cod_r, cc_r) in db_set:
                                             updates.append((qtd_r, cod_r, cc_r))
                                         else:
                                             inserts.append((cod_r, desc_r, qtd_r, cc_r))
                                             db_set.add((cod_r, cc_r))
-                                    
+
                                     if inserts: cur.executemany("INSERT INTO estoque VALUES (?,?,?,?)", inserts)
                                     if updates: cur.executemany("UPDATE estoque SET Quantidade = Quantidade + ? WHERE Codigo=? AND CC=?", updates)
-                                    
+
                                 st.success(f"✅ Importação concluída! {len(inserts)} novos itens, {len(updates)} atualizações.")
                                 st.cache_data.clear()
                                 st.rerun()
@@ -378,7 +389,7 @@ else:
                         st.success("Centro de Custo cadastrado!")
                         st.cache_data.clear()
                         st.rerun()
-                
+
                 with c_sec2:
                     st.subheader("🔄 De/Para (Individual)")
                     cc_antigo = st.selectbox("De:", lista_cc)
@@ -396,7 +407,7 @@ else:
                 st.subheader("📂 De/Para em Massa")
                 st.download_button("⬇️ Template De/Para", gerar_template_depara(), "template_depara.xlsx")
                 arq_depara = st.file_uploader("Arquivo De/Para (.xlsx):", type=["xlsx"])
-                
+
                 if arq_depara and aprovar_acao_master("depara_massa", "Processar planilha De/Para em massa"):
                     df_dp = pd.read_excel(arq_depara)
                     if 'De' in df_dp.columns and 'Para' in df_dp.columns:
@@ -414,10 +425,10 @@ else:
             with abas[4]:
                 st.subheader("⚠️ Área de Risco - Acesso Master")
                 opcao = st.radio("Selecione a ação desejada:", [
-                    "1️⃣ Apenas zerar o estoque (Mantém os códigos salvos)", 
+                    "1️⃣ Apenas zerar o estoque (Mantém os códigos salvos)",
                     "2️⃣ Excluir tudo (Limpa o banco de estoque e códigos)"
                 ])
-                
+
                 if aprovar_acao_master("limpeza", f"Limpeza de Banco: {opcao}"):
                     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                         if "1️⃣" in opcao:
