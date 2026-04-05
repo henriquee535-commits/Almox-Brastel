@@ -12,7 +12,7 @@ st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="�
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
-SENHA_ACESSO = "1234"
+SENHA_ACESSO = "Almoxarifado"
 SENHA_ZERAR_ESTOQUE = "admin123"
 DB_NAME = 'estoque.db'
 LIMITE_PESSOAS = 40
