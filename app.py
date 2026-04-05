@@ -60,7 +60,7 @@ def aprovar_acao_master(chave, descricao_acao):
                 server.starttls()
                 server.login(remetente, senha_email)
                 server.sendmail(remetente, [destinatario], msg.as_string())
-            st.info("✅ E-mail de autorização enviado! Verifique sua caixa de entrada e digite o código.")
+            st.info("✅ E-mail de autorização enviado para Eduardo Sousa - Controladoria! Solicite a ele o código gerado.")
         except Exception as e:
             st.error(f"Erro ao enviar e-mail. ({e})")
 
