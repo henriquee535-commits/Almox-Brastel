@@ -24,8 +24,8 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&display=swap');
 
 html, body, [class*="css"] { font-family: 'Sora', sans-serif; }
-header {visibility: hidden;}
 
+/* Botões e Alertas */
 .stButton > button {
     background: linear-gradient(135deg, #1a3a4a, #0d5c8a);
     color: white; border: none; border-radius: 8px;
@@ -143,8 +143,8 @@ if menu == "📊 Consulta":
     src1 = logo_para_base64("logo1.png")
     src2 = logo_para_base64("logo2.png")
 
-    img1 = f'<img class="logo1-img" src="{src1}">' if src1 else '<span style="color:#102a43;font-weight:700;">LOGO 1</span>'
-    img2 = f'<img class="logo2-img" src="{src2}">' if src2 else '<span style="color:#102a43;font-weight:700;">LOGO 2</span>'
+    img1 = f'<img class="logo-img" src="{src1}">' if src1 else '<span style="color:#102a43;font-weight:700;">LOGO 1</span>'
+    img2 = f'<img class="logo-img" src="{src2}">' if src2 else '<span style="color:#102a43;font-weight:700;">LOGO 2</span>'
 
     df_ativos = df[df['Quantidade'] > 0]
 
@@ -166,11 +166,10 @@ if menu == "📊 Consulta":
         background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%);
         box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; gap: 16px;
       }}
-      .header-logo-left {{ display: flex; align-items: center; justify-content: flex-start; flex: 0 0 160px; }}
-      .header-right {{ display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 8px; flex: 0 0 160px; }}
-      .logo1-img {{ height: 60px; max-width: 160px; object-fit: contain; mix-blend-mode: darken; }}
-      .logo2-img {{ height: 42px; max-width: 140px; object-fit: contain; mix-blend-mode: darken; }}
-      .header-title-block {{ text-align: center; flex: 1; padding: 0 16px; }}
+      .header-logo-left {{ display: flex; align-items: center; justify-content: flex-start; flex: 1; }}
+      .header-right {{ display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 8px; flex: 1; }}
+      .logo-img {{ height: 50px; width: 140px; object-fit: contain; mix-blend-mode: darken; }}
+      .header-title-block {{ text-align: center; flex: 2; padding: 0 16px; }}
       .header-title-block h1 {{ font-size: 1.8rem; font-weight: 700; color: #102a43; letter-spacing: 0.02em; text-transform: uppercase; line-height: 1.15; }}
       .header-title-block p {{ font-size: 0.75rem; color: #334e68; margin-top: 5px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; }}
       .header-badge {{ background: rgba(16,42,67,0.1); border: 1px solid rgba(16,42,67,0.2); color: #102a43; border-radius: 20px; padding: 4px 12px; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em; white-space: nowrap; }}
@@ -236,22 +235,30 @@ if menu == "📊 Consulta":
 # ==========================================
 else:
     st.title("🔒 Área Restrita — Almoxarifado")
+    
+    # A mágica do acesso escondido acontece aqui:
     senha = st.text_input("Senha:", type="password")
 
-    if senha == SENHA_ACESSO:
-
-        tab1, tab2, tab3, tab4 = st.tabs([
+    if senha == SENHA_ACESSO or senha == SENHA_ZERAR_ESTOQUE:
+        
+        # Configuração das abas dinâmicas
+        abas_nomes = [
             "📝 Registro Individual",
             "📤 Carga em Massa",
-            "🏢 Gerenciar Centros de Custos",
-            "⚠️ Limpar Dados"
-        ])
+            "🏢 Gerenciar Setores",
+            "🗑️ Excluir Item"
+        ]
+        
+        # Só adiciona a aba de Limpar Dados se a senha digitada for a Master
+        if senha == SENHA_ZERAR_ESTOQUE:
+            abas_nomes.append("⚠️ Limpar Dados (Acesso Master)")
+
+        abas = st.tabs(abas_nomes)
 
         # ------------------------------------------
         # TAB 1: REGISTRO INDIVIDUAL
         # ------------------------------------------
-        with tab1:
-            # clear_on_submit=True limpa os campos automaticamente, eliminando a necessidade de st.rerun() que apagava os avisos
+        with abas[0]:
             with st.form("registro", clear_on_submit=True):
                 c1, c2 = st.columns(2)
                 cod        = c1.text_input("Código:")
@@ -268,7 +275,6 @@ else:
                     else:
                         desc_existente = buscar_descricao_por_codigo(cod)
                         
-                        # Trava de Segurança: Não permite cadastrar item novo sem descrição
                         if not desc_existente and not desc_input:
                             st.error("⛔ A Descrição é OBRIGATÓRIA para cadastrar um novo item no sistema.")
                         elif desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
@@ -282,7 +288,6 @@ else:
                                 
                                 if res:
                                     if op == "Saída" and res[0] < qtd:
-                                        # Sinal claro de falta de item (não deixa a saída acontecer)
                                         st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]:.0f} unidades.")
                                     else:
                                         novo = (res[0] + qtd) if op == "Entrada" else (res[0] - qtd)
@@ -291,7 +296,6 @@ else:
                                         st.cache_data.clear()
                                 else:
                                     if op == "Saída":
-                                        # Sinal claro se tentar dar saída em item que não existe no setor
                                         st.error("⛔ ITEM NÃO ENCONTRADO! Não é possível realizar a saída de um item que não existe neste setor.")
                                     else:
                                         cur.execute("INSERT INTO estoque VALUES (?,?,?,?)", (cod, desc_final, qtd, cc_sel))
@@ -301,7 +305,7 @@ else:
         # ------------------------------------------
         # TAB 2: CARGA EM MASSA
         # ------------------------------------------
-        with tab2:
+        with abas[1]:
             st.info("Upload de arquivo Excel (.xlsx) com colunas: `Codigo` | `Descricao` | `Quantidade` | `CC`")
             st.download_button("⬇️ Template Inventário", gerar_template_xlsx(), "template_inventario.xlsx")
             arquivo = st.file_uploader("Arquivo de Inventário (.xlsx):", type=["xlsx"], key="upload_massa")
@@ -323,7 +327,6 @@ else:
                                     if pd.isna(qtd_r) or qtd_r <= 0: continue
                                     if not cod_r or cod_r == 'nan': continue
                                     
-                                    # Pula itens totalmente novos sem descrição na importação em massa
                                     cur.execute("SELECT DISTINCT Descricao FROM estoque WHERE Codigo=?", (cod_r,))
                                     desc_db = cur.fetchone()
                                     if not desc_db and (not desc_r or desc_r.lower() == 'nan'):
@@ -345,7 +348,7 @@ else:
         # ------------------------------------------
         # TAB 3: GERENCIAR SETORES E DE/PARA
         # ------------------------------------------
-        with tab3:
+        with abas[2]:
             c_sec1, c_sec2 = st.columns(2)
             
             with c_sec1:
@@ -394,28 +397,46 @@ else:
                     st.rerun()
 
         # ------------------------------------------
-        # TAB 4: LIMPAR DADOS
+        # TAB 4: EXCLUIR ITEM ESPECÍFICO
         # ------------------------------------------
-        with tab4:
-            st.subheader("⚠️ Área de Risco")
+        with abas[3]:
+            st.subheader("🗑️ Excluir Item do Banco")
+            st.warning("Esta ação apagará o código e seu histórico de estoque de todos os setores.")
             
-            opcao = st.radio("Selecione a ação desejada:", [
-                "1️⃣ Apenas zerar o estoque (Mantém os códigos salvos)", 
-                "2️⃣ Excluir tudo (Limpa o banco de estoque e códigos)"
-            ])
-            
-            senha_zerar = st.text_input("Senha Master:", type="password")
-            
-            if st.button("🚨 Confirmar Execução"):
-                if senha_zerar == SENHA_ZERAR_ESTOQUE:
+            with st.form("excluir_item", clear_on_submit=True):
+                cod_excluir = st.text_input("Digite o Código do item que deseja apagar:")
+                if st.form_submit_button("🚨 Confirmar Exclusão"):
+                    if cod_excluir:
+                        with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+                            cur = conn.cursor()
+                            cur.execute("SELECT * FROM estoque WHERE Codigo=?", (cod_excluir,))
+                            if cur.fetchone():
+                                cur.execute("DELETE FROM estoque WHERE Codigo=?", (cod_excluir,))
+                                st.success(f"✅ Todos os registros do código **{cod_excluir}** foram apagados!")
+                            else:
+                                st.error("⛔ Código não encontrado no banco de dados.")
+                        st.cache_data.clear()
+
+        # ------------------------------------------
+        # TAB 5: LIMPAR DADOS (ÁREA SECRETA)
+        # ------------------------------------------
+        # Esta aba só existe/renderiza se a senha for "admin123"
+        if senha == SENHA_ZERAR_ESTOQUE:
+            with abas[4]:
+                st.subheader("⚠️ Área de Risco - Acesso Master")
+                
+                opcao = st.radio("Selecione a ação desejada:", [
+                    "1️⃣ Apenas zerar o estoque (Mantém os códigos salvos)", 
+                    "2️⃣ Excluir tudo (Limpa o banco de estoque e códigos)"
+                ])
+                
+                if st.button("🚨 Confirmar Execução em Massa"):
                     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                         if "1️⃣" in opcao:
                             conn.execute("UPDATE estoque SET Quantidade = 0")
-                            st.success("Quantidades zeradas com sucesso!")
+                            st.success("Quantidades de todos os itens zeradas com sucesso!")
                         else:
                             conn.execute("DELETE FROM estoque")
-                            st.success("Todos os itens e códigos foram apagados!")
+                            st.success("Todos os itens e códigos foram apagados do banco!")
                     st.cache_data.clear()
                     st.rerun()
-                elif senha_zerar:
-                    st.error("Senha master incorreta!")
