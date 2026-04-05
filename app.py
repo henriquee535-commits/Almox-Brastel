@@ -243,7 +243,7 @@ else:
         tab1, tab2, tab3, tab4 = st.tabs([
             "📝 Registro Individual",
             "📤 Carga em Massa",
-            "🏢 Gerenciar Setores",
+            "🏢 Gerenciar Centros de Custos",
             "⚠️ Limpar Dados"
         ])
 
