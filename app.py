@@ -2,6 +2,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import sqlite3
+import uuid
+from datetime import datetime, timedelta
 import io
 import base64
 
@@ -10,9 +12,12 @@ st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="�
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
-SENHA_ACESSO = "Almoxarifado"
-SENHA_ZERAR_ESTOQUE = "admin@123"
+# Busca as senhas no secrets.toml. (O segundo valor é um padrão caso o arquivo não seja encontrado)
+SENHA_ACESSO = st.secrets.get("SENHA_ACESSO", "Almoxarifado")
+SENHA_ZERAR_ESTOQUE = st.secrets.get("SENHA_ZERAR_ESTOQUE", "admin123")
 DB_NAME = 'estoque.db'
+LIMITE_PESSOAS = 40
+TEMPO_INATIVIDADE = 1
 
 # --- CSS GLOBAL + RESPONSIVO ---
 st.markdown("""
@@ -33,12 +38,14 @@ html, body, [class*="css"] { font-family: 'Sora', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- BANCO DE DADOS (OTIMIZADO PARA CONCORRÊNCIA) ---
+# --- BANCO DE DADOS (COM TIMEOUT PARA CONCORRÊNCIA) ---
 def init_db():
     with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS estoque
                      (Codigo TEXT, Descricao TEXT, Quantidade INTEGER, CC TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS acessos
+                     (sessao_id TEXT PRIMARY KEY, ultimo_clique TIMESTAMP)''')
         c.execute('''CREATE TABLE IF NOT EXISTS centros_custo
                      (nome TEXT PRIMARY KEY)''')
 
@@ -108,6 +115,24 @@ def logo_para_base64(path):
             continue
     return None
 
+# --- CONTROLE DE ACESSO E LIMITE DE USUÁRIOS ---
+if 'sessao_id' not in st.session_state:
+    st.session_state.sessao_id = str(uuid.uuid4())
+
+with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
+    c = conn.cursor()
+    tempo_limite = datetime.now() - timedelta(minutes=TEMPO_INATIVIDADE)
+    # Limpa inativos e renova a sessão atual
+    c.execute("DELETE FROM acessos WHERE ultimo_clique < ?", (tempo_limite,))
+    c.execute("INSERT OR REPLACE INTO acessos VALUES (?, ?)", (st.session_state.sessao_id, datetime.now()))
+    c.execute("SELECT COUNT(*) FROM acessos")
+    total_ativos = c.fetchone()[0]
+
+# TRAVA: O 41º usuário não passa daqui
+if total_ativos > LIMITE_PESSOAS:
+    st.error(f"⚠️ O sistema está lotado no momento ({total_ativos}/{LIMITE_PESSOAS} usuários). Por favor, tente novamente em 1 minuto.")
+    st.stop()
+
 # --- NAVEGAÇÃO ---
 df = carregar_estoque()
 lista_cc = carregar_ccs()
@@ -116,7 +141,7 @@ st.sidebar.title("Navegação")
 menu = st.sidebar.radio("Ir para:", ["📊 Consulta", "🔒 Almoxarifado"])
 
 st.sidebar.divider()
-st.sidebar.markdown("🟢 **Sistema Online**")
+st.sidebar.markdown(f"🟢 **{total_ativos}/{LIMITE_PESSOAS}** pessoas online")
 
 # ==========================================
 # TELA 1: CONSULTA
@@ -157,7 +182,6 @@ if menu == "📊 Consulta":
       .title-box {{ text-align: center; padding: 0 20px; }}
       .right-logo {{ justify-self: end; display: flex; align-items: center; }}
       
-      /* Logo Brastel SIGNIFICATIVAMENTE MAIOR, Engia mantida para contraste */
       .img-logo1 {{ height: 85px; width: auto; max-width: 240px; object-fit: contain; mix-blend-mode: darken; }}
       .img-logo2 {{ height: 35px; width: auto; max-width: 120px; object-fit: contain; mix-blend-mode: darken; }}
       
@@ -169,7 +193,6 @@ if menu == "📊 Consulta":
       .metric-label {{ font-size: 0.78rem; color: #718096; font-weight: 600; margin-bottom: 4px; }}
       .metric-value {{ font-size: 1.9rem; font-weight: 700; color: #1a202c; line-height: 1.1; }}
       
-      /* --- CELULAR --- */
       @media (max-width: 768px) {{
         .header-container {{
           grid-template-columns: 1fr 1fr;
@@ -284,12 +307,10 @@ else:
                                         if res[0] < qtd:
                                             st.error(f"⛔ FALTA DE ESTOQUE! O saldo atual é de apenas {res[0]} unidades.")
                                         else:
-                                            # Subtração delegada ao banco (Resolve Condição de Corrida)
                                             cur.execute("UPDATE estoque SET Quantidade = Quantidade - ? WHERE Codigo=? AND CC=?", (qtd, cod, cc_sel))
                                             st.success(f"✅ Saída registrada. Saldo atualizado: {res[0] - qtd}")
                                             st.cache_data.clear()
                                     else:
-                                        # Adição delegada ao banco (Resolve Condição de Corrida)
                                         cur.execute("UPDATE estoque SET Quantidade = Quantidade + ? WHERE Codigo=? AND CC=?", (qtd, cod, cc_sel))
                                         st.success(f"✅ Entrada registrada. Saldo atualizado: {res[0] + qtd}")
                                         st.cache_data.clear()
@@ -317,8 +338,6 @@ else:
                         st.error(f"⛔ Colunas ausentes: {', '.join(faltando)}")
                     else:
                         if st.button("🚀 Processar Importação"):
-                            
-                            # Limpeza e preparação em memória (Muito mais rápido)
                             df_upload['Codigo'] = df_upload['Codigo'].astype(str).str.strip()
                             df_upload['Descricao'] = df_upload['Descricao'].astype(str).str.strip()
                             df_upload['CC'] = df_upload['CC'].astype(str).str.strip()
@@ -332,11 +351,9 @@ else:
                             with sqlite3.connect(DB_NAME, timeout=10.0) as conn:
                                 cur = conn.cursor()
                                 
-                                # Cadastro em lote de novos Centros de Custo
                                 ccs_unicos = df_upload['CC'].unique()
                                 cur.executemany("INSERT OR IGNORE INTO centros_custo VALUES (?)", [(cc,) for cc in ccs_unicos])
 
-                                # Busca estado atual do banco para evitar N queries individuais
                                 cur.execute("SELECT Codigo, CC FROM estoque")
                                 db_set = set((row[0], row[1]) for row in cur.fetchall())
 
@@ -346,7 +363,6 @@ else:
                                 for _, row in df_upload.iterrows():
                                     cod_r, desc_r, cc_r, qtd_r = row['Codigo'], row['Descricao'], row['CC'], row['Quantidade']
                                     
-                                    # Pula itens totalmente novos sem descrição na importação em massa
                                     if (cod_r, cc_r) not in db_set and (not desc_r or desc_r.lower() == 'nan'):
                                         continue
                                     
@@ -354,9 +370,8 @@ else:
                                         updates.append((qtd_r, cod_r, cc_r))
                                     else:
                                         inserts.append((cod_r, desc_r, qtd_r, cc_r))
-                                        db_set.add((cod_r, cc_r)) # Registra no conjunto local para evitar erro de duplicata no mesmo Excel
+                                        db_set.add((cod_r, cc_r))
                                 
-                                # Envio em lote para o banco (Elimina travamentos e acelera em 100x)
                                 if inserts:
                                     cur.executemany("INSERT INTO estoque VALUES (?,?,?,?)", inserts)
                                 if updates:
