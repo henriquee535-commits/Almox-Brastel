@@ -175,12 +175,12 @@ def aprovar_acao_master(chave, descricao_acao):
                 server.starttls()
                 server.login(remetente, senha_email)
                 server.sendmail(remetente, [destinatario], msg.as_string())
-            st.info("✅ Solicitação enviada! Aguarde o código de autorização.")
+            st.info("✅ Solicitação enviada!")
         except Exception as e:
             st.error(f"Erro ao enviar e-mail: {e}")
 
     if st.session_state[f"token_{chave}"]:
-        token_input = st.text_input("🔑 Digite o Código de Autorização:", key=f"inp_{chave}")
+        token_input = st.text_input("🔑 Código enviado para Eduardo Sousa - Controladoria, solicite a ele. Código:", key=f"inp_{chave}")
         if st.button("✅ Confirmar Execução", key=f"exec_{chave}"):
             if token_input == st.session_state[f"token_{chave}"]:
                 st.session_state[f"token_{chave}"] = None
@@ -252,6 +252,16 @@ if menu == "📊 Consulta":
       .metric-card {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }}
       .metric-label {{ font-size: 0.78rem; color: #718096; font-weight: 600; margin-bottom: 4px; }}
       .metric-value {{ font-size: 1.9rem; font-weight: 700; color: #1a202c; line-height: 1.1; }}
+      
+      /* AJUSTE PARA MOBILE */
+      @media (max-width: 768px) {{
+        .header-container {{ grid-template-columns: 1fr; gap: 15px; padding: 15px; text-align: center; }}
+        .left-logo, .right-logo {{ justify-self: center; }}
+        .img-logo1 {{ height: 60px; }}
+        .img-logo2 {{ height: 30px; }}
+        .title-box h1 {{ font-size: 1.4rem; }}
+        .metrics-grid {{ grid-template-columns: 1fr; gap: 8px; }}
+      }}
     </style>
     </head>
     <body>
@@ -263,7 +273,7 @@ if menu == "📊 Consulta":
     </div>
     </body>
     </html>
-    """, height=260, scrolling=False)
+    """, height=350, scrolling=True)
 
     st.divider()
 
@@ -470,6 +480,21 @@ else:
                         st.success("De/Para em massa concluído!")
                         st.cache_data.clear()
                         st.rerun()
+                
+                # --- NOVA SESSÃO: INCLUSÃO EM MASSA DE CCs ---
+                st.divider()
+                st.subheader("➕ Inclusão em Massa de Centros de Custo")
+                ccs_massa = st.text_area("Cole a lista de Centros de Custo (um por linha):")
+                if ccs_massa and aprovar_acao_master("add_cc_massa", "Adicionar CCs em Massa"):
+                    novos_ccs = [c.strip() for c in ccs_massa.split('\n') if c.strip()]
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            for cc in novos_ccs:
+                                cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (cc,))
+                        conn.commit()
+                    st.success(f"✅ {len(novos_ccs)} Centros de Custo processados com sucesso!")
+                    st.cache_data.clear()
+                    st.rerun()
 
             with abas[4]:
                 st.subheader("⚠️ Área de Risco - Acesso Master")
