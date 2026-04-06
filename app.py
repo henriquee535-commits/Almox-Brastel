@@ -70,6 +70,7 @@ def init_db():
 
 init_db()
 
+@st.cache_data(ttl=300)
 def carregar_estoque():
     with get_conn() as conn:
         with conn.cursor() as c:
@@ -404,7 +405,7 @@ else:
                                             cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)', inserts)
                                         if updates:
                                             cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', updates)
-                                    conn.commit()
+                                conn.commit()
 
                                 st.success(f"✅ Importação concluída! {len(inserts)} novos, {len(updates)} atualizados.")
                                 st.cache_data.clear()
@@ -439,7 +440,7 @@ else:
                         with get_conn() as conn:
                             with conn.cursor() as cur:
                                 cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (novo_cc,))
-                            conn.commit()
+                        conn.commit()
                         st.success("Centro de Custo cadastrado!")
                         st.cache_data.clear()
                         st.rerun()
