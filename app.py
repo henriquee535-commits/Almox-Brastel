@@ -107,7 +107,7 @@ def gerar_template_xlsx():
         'Codigo': ['ABC001', 'ABC002'],
         'Descricao': ['Parafuso M8', 'Cabo Elétrico 2,5mm'],
         'Quantidade': [100, 50],
-        'CC': ['LIVRE DESTINAÇÃO', 'LIVRE DESTINAÇÃO']
+        'CC': ['01/0001 - LIVRE DEMANDA', '01/0001 - LIVRE DEMANDA']
     })
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
