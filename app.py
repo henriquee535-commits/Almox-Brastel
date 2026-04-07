@@ -9,6 +9,8 @@ import io
 import base64
 import smtplib
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 import random
 
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -16,8 +18,8 @@ st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="�
 
 # --- CONFIGURAÇÕES ---
 ARQUIVO_PLANILHA = 'Almoxarifado.xlsm'
-SENHA_ACESSO = st.secrets["SENHA_ACESSO"]
-SENHA_ZERAR_ESTOQUE = st.secrets["SENHA_ZERAR_ESTOQUE"]
+SENHA_ACESSO = st.secrets.get("SENHA_ACESSO", "123")
+SENHA_ZERAR_ESTOQUE = st.secrets.get("SENHA_ZERAR_ESTOQUE", "123")
 DATABASE_URL = st.secrets["DATABASE_URL"]
 LIMITE_PESSOAS = 40
 TEMPO_INATIVIDADE = 1
@@ -64,6 +66,13 @@ def init_db():
             c.execute('''
                 CREATE TABLE IF NOT EXISTS centros_custo (
                     nome TEXT PRIMARY KEY
+                )
+            ''')
+            # Nova tabela para controle do e-mail semanal
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS logs_envio (
+                    id SERIAL PRIMARY KEY,
+                    data_envio DATE UNIQUE
                 )
             ''')
         conn.commit()
@@ -190,6 +199,52 @@ def aprovar_acao_master(chave, descricao_acao):
                 st.error("⛔ Código incorreto!")
     return False
 
+# --- ENVIO SEMANAL DE RELATÓRIO ---
+def verificar_e_enviar_relatorio_semanal(df_completo):
+    hoje = datetime.now().date()
+    with get_conn() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT MAX(data_envio) as ultimo FROM logs_envio")
+            res = c.fetchone()
+            ultimo_envio = res['ultimo'] if res and res['ultimo'] else None
+
+    # Se nunca enviou ou se já passou 7 dias
+    if ultimo_envio is None or (hoje - ultimo_envio).days >= 7:
+        remetente = st.secrets["email"]["remetente"]
+        senha_email = st.secrets["email"]["senha"]
+        destinatario = st.secrets["email"]["destinatario"]
+
+        msg = MIMEMultipart()
+        msg['Subject'] = f'Relatório Semanal de Estoque - Brastel ({hoje.strftime("%d/%m/%Y")})'
+        msg['From'] = remetente
+        msg['To'] = destinatario
+
+        corpo = f"Olá,\n\nSegue em anexo o relatório completo do inventário atualizado (Data: {hoje.strftime('%d/%m/%Y')})."
+        msg.attach(MIMEText(corpo, 'plain'))
+
+        # Criar Excel na memória
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+            df_completo.to_excel(writer, index=False, sheet_name='Estoque_Atual')
+        
+        anexo = MIMEApplication(buf.getvalue(), Name="Relatorio_Estoque.xlsx")
+        anexo['Content-Disposition'] = 'attachment; filename="Relatorio_Estoque.xlsx"'
+        msg.attach(anexo)
+
+        try:
+            with smtplib.SMTP('smtp.office365.com', 587) as server:
+                server.starttls()
+                server.login(remetente, senha_email)
+                server.sendmail(remetente, [destinatario], msg.as_string())
+            
+            # Atualiza log de envio
+            with get_conn() as conn:
+                with conn.cursor() as c:
+                    c.execute("INSERT INTO logs_envio (data_envio) VALUES (%s) ON CONFLICT (data_envio) DO NOTHING", (hoje,))
+                conn.commit()
+        except Exception as e:
+            st.error(f"⚠️ Falha na automação do e-mail semanal: {e}")
+
 # --- CONTROLE DE ACESSO E LIMITE DE USUÁRIOS ---
 if 'sessao_id' not in st.session_state:
     st.session_state.sessao_id = str(uuid.uuid4())
@@ -210,10 +265,15 @@ if total_ativos > LIMITE_PESSOAS:
     st.error(f"⚠️ O sistema está lotado ({total_ativos}/{LIMITE_PESSOAS} usuários). Tente novamente em 1 minuto.")
     st.stop()
 
-# --- NAVEGAÇÃO ---
+# --- CARGA E VERIFICAÇÃO INICIAL ---
 df = carregar_estoque()
 lista_cc = carregar_ccs()
 
+# Chama a verificação silenciosa do envio semanal
+if not df.empty:
+    verificar_e_enviar_relatorio_semanal(df)
+
+# --- NAVEGAÇÃO ---
 st.sidebar.title("Navegação")
 menu = st.sidebar.radio("Ir para:", ["📊 Consulta", "🔒 Almoxarifado"])
 st.sidebar.divider()
@@ -290,6 +350,20 @@ if menu == "📊 Consulta":
             df_filt['Codigo'].astype(str).str.contains(busca, case=False) |
             df_filt['Descricao'].str.contains(busca, case=False, na=False)
         ]
+
+    # Botão de Download da Consulta Atual
+    if not df_filt.empty:
+        col_down, _ = st.columns([1, 4])
+        buf_xlsx = io.BytesIO()
+        with pd.ExcelWriter(buf_xlsx, engine='openpyxl') as writer:
+            df_filt.to_excel(writer, index=False, sheet_name='Consulta_Inventario')
+        
+        col_down.download_button(
+            label="📥 Baixar Consulta em Excel",
+            data=buf_xlsx.getvalue(),
+            file_name=f"Consulta_Inventario_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
     st.dataframe(df_filt, use_container_width=True, hide_index=True)
 
@@ -405,11 +479,11 @@ else:
                                             cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)', inserts)
                                         if updates:
                                             cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', updates)
-                                conn.commit()
+                                    conn.commit()
 
-                                st.success(f"✅ Importação concluída! {len(inserts)} novos, {len(updates)} atualizados.")
-                                st.cache_data.clear()
-                                st.rerun()
+                            st.success(f"✅ Importação concluída! {len(inserts)} novos, {len(updates)} atualizados.")
+                            st.cache_data.clear()
+                            st.rerun()
                 except Exception as e:
                     st.error(f"Erro: {e}")
 
