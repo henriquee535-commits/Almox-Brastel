@@ -359,7 +359,7 @@ if menu == "📊 Consulta":
             df_filt.to_excel(writer, index=False, sheet_name='Consulta_Inventario')
         
         col_down.download_button(
-            label="📥 Baixar Consulta em Excel",
+            label="📥 Baixar Excel",
             data=buf_xlsx.getvalue(),
             file_name=f"Consulta_Inventario_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
