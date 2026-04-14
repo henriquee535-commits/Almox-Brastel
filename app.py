@@ -89,7 +89,7 @@ def init_db():
                     "Colaborador"   TEXT,
                     "CC"            TEXT,
                     "Status"        TEXT DEFAULT 'Ativo',
-                    "Localizacao"   TEXT
+                    "Gestor"   TEXT
                 )
             ''')
         conn.commit()
@@ -122,9 +122,9 @@ def carregar_estoque():
 def carregar_telefonia():
     with get_conn() as conn:
         with conn.cursor() as c:
-            c.execute('SELECT "Numero","Conta","Operadora","Colaborador","CC","Status","Localizacao" FROM telefonia ORDER BY "Conta","Numero"')
+            c.execute('SELECT "Numero","Conta","Operadora","Colaborador","CC","Status","Gestor" FROM telefonia ORDER BY "Conta","Numero"')
             rows = c.fetchall()
-    cols = ['Numero', 'Conta', 'Operadora', 'Colaborador', 'CC', 'Status', 'Localizacao']
+    cols = ['Numero', 'Conta', 'Operadora', 'Colaborador', 'CC', 'Status', 'Gestor']
     return pd.DataFrame(rows, columns=cols)
 
 @st.cache_data
@@ -180,7 +180,7 @@ def gerar_template_telefonia():
         'Colaborador': ['João Silva', 'Maria Souza'],
         'CC':          ['01/0001 - LIVRE DEMANDA', '01/0001 - LIVRE DEMANDA'],
         'Status':      ['Ativo', 'Ativo'],
-        'Localizacao': ['São Paulo', 'Rio de Janeiro'],
+        'Gestor': ['São Paulo', 'Rio de Janeiro'],
     })
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
@@ -672,7 +672,7 @@ else:
                                         st.error(f"⛔ O número **{num_fmt}** já está cadastrado.")
                                     else:
                                         cur.execute(
-                                            'INSERT INTO telefonia ("Numero","Conta","Operadora","Colaborador","CC","Status","Localizacao") VALUES (%s,%s,%s,%s,%s,%s,%s)',
+                                            'INSERT INTO telefonia ("Numero","Conta","Operadora","Colaborador","CC","Status","Gestor") VALUES (%s,%s,%s,%s,%s,%s,%s)',
                                             (num_fmt, conta_n, oper_n, colab_n.strip(), cc_n, 'Ativo', loc_n.strip())
                                         )
                                         st.success(f"✅ Linha **{num_fmt}** cadastrada com sucesso!")
@@ -702,7 +702,7 @@ else:
                                 oper_e    = ec2.selectbox("Operadora:", OPERADORAS_TELEFONIA, index=idx_oper)
                                 ec3, ec4  = st.columns(2)
                                 colab_e   = ec3.text_input("Colaborador:", value=linha['Colaborador'] or "")
-                                loc_e     = ec4.text_input("Localização:", value=linha['Localizacao'] or "")
+                                loc_e     = ec4.text_input("Localização:", value=linha['Gestor'] or "")
                                 idx_cc    = lista_cc.index(linha['CC']) if linha['CC'] in lista_cc else 0
                                 cc_e      = st.selectbox("Centro de Custo:", lista_cc, index=idx_cc)
 
@@ -710,7 +710,7 @@ else:
                                     with get_conn() as conn:
                                         with conn.cursor() as cur:
                                             cur.execute(
-                                                'UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Localizacao"=%s WHERE "Numero"=%s',
+                                                'UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Gestor"=%s WHERE "Numero"=%s',
                                                 (conta_e, oper_e, colab_e.strip(), cc_e, loc_e.strip(), num_fmt_ed)
                                             )
                                         conn.commit()
@@ -745,14 +745,14 @@ else:
 
         # ── TAB 3: TELEFONIA — CARGA EM MASSA ────────────────────
         with abas[3]:
-            st.info("Upload de arquivo Excel com colunas: `Numero` | `Conta` | `Operadora` | `Colaborador` | `CC` | `Status` | `Localizacao`")
+            st.info("Upload de arquivo Excel com colunas: `Numero` | `Conta` | `Operadora` | `Colaborador` | `CC` | `Status` | `Gestor`")
             st.download_button("⬇️ Template Telefonia", gerar_template_telefonia(), "template_telefonia.xlsx")
             arq_tel = st.file_uploader("Arquivo de Telefonia (.xlsx):", type=["xlsx"], key="upload_tel")
 
             if arq_tel:
                 try:
                     df_tel_up = pd.read_excel(arq_tel, engine='openpyxl')
-                    cols_req  = {'Numero', 'Conta', 'Operadora', 'Colaborador', 'CC', 'Status', 'Localizacao'}
+                    cols_req  = {'Numero', 'Conta', 'Operadora', 'Colaborador', 'CC', 'Status', 'Gestor'}
                     faltando  = cols_req - set(df_tel_up.columns)
                     if faltando:
                         st.error(f"⛔ Colunas ausentes: {', '.join(faltando)}")
@@ -782,19 +782,19 @@ else:
                                         status_v = row['Status'] if row['Status'] in STATUS_TELEFONIA else 'Ativo'
 
                                         if num_fmt in nums_db:
-                                            updates_tel.append((row['Conta'], row['Operadora'], row['Colaborador'], row['CC'], status_v, row['Localizacao'], num_fmt))
+                                            updates_tel.append((row['Conta'], row['Operadora'], row['Colaborador'], row['CC'], status_v, row['Gestor'], num_fmt))
                                         else:
-                                            inserts_tel.append((num_fmt, row['Conta'], row['Operadora'], row['Colaborador'], row['CC'], status_v, row['Localizacao']))
+                                            inserts_tel.append((num_fmt, row['Conta'], row['Operadora'], row['Colaborador'], row['CC'], status_v, row['Gestor']))
                                             nums_db.add(num_fmt)
 
                                     if inserts_tel:
                                         cur.executemany(
-                                            'INSERT INTO telefonia ("Numero","Conta","Operadora","Colaborador","CC","Status","Localizacao") VALUES (%s,%s,%s,%s,%s,%s,%s)',
+                                            'INSERT INTO telefonia ("Numero","Conta","Operadora","Colaborador","CC","Status","Gestor") VALUES (%s,%s,%s,%s,%s,%s,%s)',
                                             inserts_tel
                                         )
                                     if updates_tel:
                                         cur.executemany(
-                                            'UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Status"=%s,"Localizacao"=%s WHERE "Numero"=%s',
+                                            'UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Status"=%s,"Gestor"=%s WHERE "Numero"=%s',
                                             updates_tel
                                         )
                                 conn.commit()
