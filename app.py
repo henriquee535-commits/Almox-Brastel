@@ -190,7 +190,7 @@ def gerar_template_telefonia():
         'Colaborador': ['João Silva', 'Maria Souza'],
         'CC':          ['01/0001 - LIVRE DEMANDA', '01/0001 - LIVRE DEMANDA'],
         'Status':      ['Ativo', 'Ativo'],
-        'Gestor':      ['São Paulo', 'Rio de Janeiro'],
+        'Gestor':      ['Gustavo Guedes', 'Daniel Nascimento'],
     })
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
