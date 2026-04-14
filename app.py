@@ -79,7 +79,7 @@ def init_db():
                     data_envio DATE UNIQUE
                 )
             ''')
-            # Tabela de telefonia
+            # Tabela de telefonia (Criada com a estrutura correta)
             c.execute('''
                 CREATE TABLE IF NOT EXISTS telefonia (
                     id SERIAL PRIMARY KEY,
@@ -89,21 +89,31 @@ def init_db():
                     "Colaborador"   TEXT,
                     "CC"            TEXT,
                     "Status"        TEXT DEFAULT 'Ativo',
-                    "Gestor"   TEXT
+                    "Gestor"        TEXT
                 )
             ''')
+            
+            # Ajuste automático caso o banco antigo ainda tenha a coluna "Localizacao"
+            c.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='telefonia' AND column_name='Localizacao'
+            """)
+            if c.fetchone():
+                c.execute('ALTER TABLE telefonia RENAME COLUMN "Localizacao" TO "Gestor"')
+                
         conn.commit()
 
 init_db()
 
 # ── helpers de validação ──────────────────────────────────────────────────────
 def formatar_numero(raw: str):
-    """Normaliza e valida formato (XX) 9XXXX-XXXX. Retorna None se inválido."""
+    """Normaliza para (XX) 9XXXX-XXXX (Celular) ou (XX) XXXX-XXXX (Fixo). Retorna None se inválido."""
     digits = re.sub(r'\D', '', str(raw))
-    if len(digits) == 11:
-        ddd, nove, bloco1, bloco2 = digits[:2], digits[2], digits[3:7], digits[7:]
-        if nove == '9':
-            return f"({ddd}) {nove}{bloco1}-{bloco2}"
+    if len(digits) == 11 and digits[2] == '9': # Celular
+        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+    elif len(digits) == 10: # Fixo Comercial/Ramal
+        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
     return None
 
 # ── cache ─────────────────────────────────────────────────────────────────────
@@ -180,7 +190,7 @@ def gerar_template_telefonia():
         'Colaborador': ['João Silva', 'Maria Souza'],
         'CC':          ['01/0001 - LIVRE DEMANDA', '01/0001 - LIVRE DEMANDA'],
         'Status':      ['Ativo', 'Ativo'],
-        'Gestor': ['São Paulo', 'Rio de Janeiro'],
+        'Gestor':      ['São Paulo', 'Rio de Janeiro'],
     })
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
@@ -223,13 +233,13 @@ def aprovar_acao_master(chave, descricao_acao):
         destinatario = st.secrets["email"]["destinatario"]
 
         msg = MIMEText(
-            f"Solicitação de ação no sistema de Almoxarifado:\n\n"
+            f"Solicitação de ação no sistema:\n\n"
             f"SOLICITANTE: {email_solicitante}\n"
             f"AÇÃO: {descricao_acao}\n\n"
             f"Para autorizar, informe o código abaixo:\n"
             f"CÓDIGO: {codigo}"
         )
-        msg['Subject'] = 'Aprovação de Sistema - Almoxarifado'
+        msg['Subject'] = 'Aprovação de Sistema - Master'
         msg['From'] = remetente
         msg['To'] = destinatario
 
@@ -243,7 +253,7 @@ def aprovar_acao_master(chave, descricao_acao):
             st.error(f"Erro ao enviar e-mail: {e}")
 
     if st.session_state[f"token_{chave}"]:
-        token_input = st.text_input("🔑 Código enviado para Eduardo Sousa - Controladoria, solicite a ele. Código:", key=f"inp_{chave}")
+        token_input = st.text_input("🔑 Código enviado para Controladoria. Código:", key=f"inp_{chave}")
         if st.button("✅ Confirmar Execução", key=f"exec_{chave}"):
             if token_input == st.session_state[f"token_{chave}"]:
                 st.session_state[f"token_{chave}"] = None
@@ -283,15 +293,20 @@ def verificar_e_enviar_relatorio_semanal(df_completo):
         msg.attach(anexo)
 
         try:
-            with smtplib.SMTP('smtp.office365.com', 587) as server:
-                server.starttls()
-                server.login(remetente, senha_email)
-                server.sendmail(remetente, [destinatario], msg.as_string())
-
+            foi_inserido = None
             with get_conn() as conn:
                 with conn.cursor() as c:
-                    c.execute("INSERT INTO logs_envio (data_envio) VALUES (%s) ON CONFLICT (data_envio) DO NOTHING", (hoje,))
+                    # Trava de concorrência: só quem inserir a data hoje vai retornar o ID e disparar o e-mail
+                    c.execute("INSERT INTO logs_envio (data_envio) VALUES (%s) ON CONFLICT (data_envio) DO NOTHING RETURNING id", (hoje,))
+                    foi_inserido = c.fetchone()
                 conn.commit()
+            
+            # Só dispara o e-mail se conseguiu inserir o registro na tabela
+            if foi_inserido:
+                with smtplib.SMTP('smtp.office365.com', 587) as server:
+                    server.starttls()
+                    server.login(remetente, senha_email)
+                    server.sendmail(remetente, [destinatario], msg.as_string())
         except Exception as e:
             st.error(f"⚠️ Falha na automação do e-mail semanal: {e}")
 
@@ -632,7 +647,7 @@ else:
                                             cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)', inserts)
                                         if updates:
                                             cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', updates)
-                                    conn.commit()
+                                conn.commit()
 
                                 st.success(f"✅ Importação concluída! {len(inserts)} novos, {len(updates)} atualizados.")
                                 st.cache_data.clear()
@@ -656,12 +671,12 @@ else:
                     colab_n  = tc4.text_input("Nome do Colaborador:")
                     tc5, tc6 = st.columns(2)
                     cc_n     = tc5.selectbox("Centro de Custo:", lista_cc)
-                    loc_n    = tc6.text_input("Localização:")
+                    loc_n    = tc6.text_input("Gestor:")
 
                     if st.form_submit_button("✅ Cadastrar Linha"):
                         num_fmt = formatar_numero(num_raw)
                         if not num_fmt:
-                            st.error("⛔ Número inválido. Use o formato (XX) 9XXXX-XXXX com 11 dígitos.")
+                            st.error("⛔ Número inválido. Use o formato (XX) 9XXXX-XXXX para celular ou (XX) XXXX-XXXX para fixo.")
                         elif not colab_n.strip():
                             st.error("⛔ Informe o nome do colaborador.")
                         else:
@@ -702,7 +717,7 @@ else:
                                 oper_e    = ec2.selectbox("Operadora:", OPERADORAS_TELEFONIA, index=idx_oper)
                                 ec3, ec4  = st.columns(2)
                                 colab_e   = ec3.text_input("Colaborador:", value=linha['Colaborador'] or "")
-                                loc_e     = ec4.text_input("Localização:", value=linha['Gestor'] or "")
+                                loc_e     = ec4.text_input("Gestor:", value=linha['Gestor'] or "")
                                 idx_cc    = lista_cc.index(linha['CC']) if linha['CC'] in lista_cc else 0
                                 cc_e      = st.selectbox("Centro de Custo:", lista_cc, index=idx_cc)
 
@@ -779,7 +794,10 @@ else:
                                         if row['CC'] not in lista_cc and row['CC'] != '':
                                             erros.append(f"Linha {i+2}: CC não encontrado '{row['CC']}'")
                                             continue
-                                        status_v = row['Status'] if row['Status'] in STATUS_TELEFONIA else 'Ativo'
+                                        
+                                        # Conserta problemas de letras maiusculas/minusculas no status inserido via Excel
+                                        status_excel = str(row['Status']).strip().capitalize()
+                                        status_v = status_excel if status_excel in STATUS_TELEFONIA else 'Ativo'
 
                                         if num_fmt in nums_db:
                                             updates_tel.append((row['Conta'], row['Operadora'], row['Colaborador'], row['CC'], status_v, row['Gestor'], num_fmt))
@@ -797,7 +815,7 @@ else:
                                             'UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Status"=%s,"Gestor"=%s WHERE "Numero"=%s',
                                             updates_tel
                                         )
-                                conn.commit()
+                            conn.commit()
 
                             if erros:
                                 st.warning("⚠️ Alguns registros foram ignorados:\n" + "\n".join(erros))
@@ -824,8 +842,9 @@ else:
                                 st.success(f"✅ Código **{cod_excluir}** apagado!")
                             else:
                                 st.error("⛔ Código não encontrado.")
-                        conn.commit()
+                    conn.commit()
                     st.cache_data.clear()
+                    st.rerun()
 
             # TAB 5: Gerenciar CCs (compartilhado estoque + telefonia)
             with abas[5]:
@@ -853,7 +872,7 @@ else:
                                 cur.execute('UPDATE estoque   SET "CC" = %s WHERE "CC" = %s', (cc_novo, cc_antigo))
                                 cur.execute('UPDATE telefonia SET "CC" = %s WHERE "CC" = %s', (cc_novo, cc_antigo))
                                 cur.execute("DELETE FROM centros_custo WHERE nome = %s", (cc_antigo,))
-                            conn.commit()
+                        conn.commit()
                         st.success("Centro de Custo renomeado! (aplicado ao estoque e à telefonia)")
                         st.cache_data.clear()
                         st.rerun()
@@ -876,7 +895,7 @@ else:
                                         cur.execute('UPDATE estoque   SET "CC" = %s WHERE "CC" = %s', (para, de))
                                         cur.execute('UPDATE telefonia SET "CC" = %s WHERE "CC" = %s', (para, de))
                                         cur.execute("DELETE FROM centros_custo WHERE nome = %s", (de,))
-                            conn.commit()
+                        conn.commit()
                         st.success("De/Para em massa concluído!")
                         st.cache_data.clear()
                         st.rerun()
@@ -890,7 +909,7 @@ else:
                         with conn.cursor() as cur:
                             for cc in novos_ccs:
                                 cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (cc,))
-                        conn.commit()
+                    conn.commit()
                     st.success(f"✅ {len(novos_ccs)} Centros de Custo processados com sucesso!")
                     st.cache_data.clear()
                     st.rerun()
@@ -911,7 +930,7 @@ else:
                             else:
                                 cur.execute("DELETE FROM estoque")
                                 st.success("Todos os itens apagados!")
-                        conn.commit()
+                    conn.commit()
                     st.cache_data.clear()
                     st.rerun()
 
@@ -933,8 +952,9 @@ else:
                                     st.success(f"✅ Linha **{num_del_fmt}** excluída!")
                                 else:
                                     st.error("⛔ Número não encontrado.")
-                            conn.commit()
+                        conn.commit()
                         st.cache_data.clear()
+                        st.rerun()
 
             # TAB 8: Tel — Limpar Dados
             with abas[8]:
@@ -952,6 +972,6 @@ else:
                             else:
                                 cur.execute("DELETE FROM telefonia")
                                 st.success("Todas as linhas apagadas!")
-                        conn.commit()
+                    conn.commit()
                     st.cache_data.clear()
                     st.rerun()
