@@ -982,7 +982,7 @@ else:
                     if ce and aprovar_acao_master("d_c", f"Apagar {ce}"):
                         with get_conn() as conn:
                             with conn.cursor() as cur: cur.execute('DELETE FROM estoque WHERE "Codigo"=%s', (ce,))
-                        st.success("Apagado!"); st.cache_data.clear(); st.rerun()STATUS_TELEFONIA = ["Ativo", "Inativo"]
+                        st.success("Apagado!"); st.cache_data.clear(); st.rerun
 
 # --- CSS GLOBAL ---
 st.markdown("""
