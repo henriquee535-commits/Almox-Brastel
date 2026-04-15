@@ -241,8 +241,11 @@ def logo_para_base64(path):
 @st.cache_data(ttl=120, max_entries=2)
 def carregar_estoque():
     with get_conn() as conn:
-        with conn.cursor() as c: c.execute('SELECT "Codigo", "Descricao", "Quantidade", "CC" FROM estoque')
-        df = pd.DataFrame(c.fetchall(), columns=['Codigo', 'Descricao', 'Quantidade', 'CC'])
+        with conn.cursor() as c: 
+            c.execute('SELECT "Codigo", "Descricao", "Quantidade", "CC" FROM estoque')
+            rows = c.fetchall() # Puxa os dados DENTRO do bloco do cursor
+            
+    df = pd.DataFrame(rows, columns=['Codigo', 'Descricao', 'Quantidade', 'CC'])
     if not df.empty:
         df['Quantidade'] = pd.to_numeric(df['Quantidade'], downcast='integer')
         df['CC'] = df['CC'].astype('category')
@@ -251,29 +254,39 @@ def carregar_estoque():
 @st.cache_data(ttl=120, max_entries=2)
 def carregar_telefonia():
     with get_conn() as conn:
-        with conn.cursor() as c: c.execute('SELECT "Numero","Conta","Operadora","Colaborador","CC","Status","Gestor" FROM telefonia ORDER BY "Conta","Numero"')
-        df_tel = pd.DataFrame(c.fetchall(), columns=['Numero', 'Conta', 'Operadora', 'Colaborador', 'CC', 'Status', 'Gestor'])
+        with conn.cursor() as c: 
+            c.execute('SELECT "Numero","Conta","Operadora","Colaborador","CC","Status","Gestor" FROM telefonia ORDER BY "Conta","Numero"')
+            rows = c.fetchall()
+            
+    cols = ['Numero', 'Conta', 'Operadora', 'Colaborador', 'CC', 'Status', 'Gestor']
+    df_tel = pd.DataFrame(rows, columns=cols)
     if not df_tel.empty:
-        for col in ['Conta', 'Operadora', 'CC', 'Status']: df_tel[col] = df_tel[col].astype('category')
+        for col in ['Conta', 'Operadora', 'CC', 'Status']: 
+            df_tel[col] = df_tel[col].astype('category')
     return df_tel
 
 @st.cache_data
 def carregar_ccs():
     with get_conn() as conn:
-        with conn.cursor() as c: c.execute("SELECT nome FROM centros_custo ORDER BY nome")
-        return [r['nome'] for r in c.fetchall()] or ["Geral"]
+        with conn.cursor() as c: 
+            c.execute("SELECT nome FROM centros_custo ORDER BY nome")
+            rows = c.fetchall()
+    return [r['nome'] for r in rows] or ["Geral"]
 
 @st.cache_data
 def carregar_colaboradores():
     with get_conn() as conn:
-        with conn.cursor() as c: c.execute("SELECT nome FROM colaboradores ORDER BY nome")
-        return [r['nome'] for r in c.fetchall()]
+        with conn.cursor() as c: 
+            c.execute("SELECT nome FROM colaboradores ORDER BY nome")
+            rows = c.fetchall()
+    return [r['nome'] for r in rows]
 
 def buscar_descricao_por_codigo(cod):
     with get_conn() as conn:
-        with conn.cursor() as c: c.execute('SELECT DISTINCT "Descricao" FROM estoque WHERE "Codigo" = %s', (cod,))
-        res = c.fetchone()
-        return res['Descricao'] if res else None
+        with conn.cursor() as c: 
+            c.execute('SELECT DISTINCT "Descricao" FROM estoque WHERE "Codigo" = %s', (cod,))
+            res = c.fetchone()
+    return res['Descricao'] if res else None
 
 def carregar_itens_movimentacao(mov_id: int):
     with get_conn() as conn:
@@ -283,7 +296,8 @@ def carregar_itens_movimentacao(mov_id: int):
             if not itens: # Fallback legado
                 cur.execute('SELECT codigo_item, quantidade FROM movimentacoes WHERE id=%s AND codigo_item IS NOT NULL', (mov_id,))
                 row = cur.fetchone()
-                if row and row['codigo_item']: itens = [{'codigo_item': row['codigo_item'], 'quantidade': row['quantidade'], 'descricao': None}]
+                if row and row['codigo_item']: 
+                    itens = [{'codigo_item': row['codigo_item'], 'quantidade': row['quantidade'], 'descricao': None}]
     return itens
 
 # --- Geração de Documentos e Notificações omitidas por brevidade das funções auxiliares, usando lógicas limpas ---
