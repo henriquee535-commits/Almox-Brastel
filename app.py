@@ -137,13 +137,17 @@ def init_db():
                     VALUES (%s, %s, %s, %s, %s)
                 ''', ('master@brastelnet.com.br', SENHA_ZERAR_ESTOQUE, 'Administrador', 'Master', 'Todos'))
                 
-        conn.commit()
+        conn.commit()  # CORRIGIDO PARA DENTRO DO WITH CONN
 
 init_db()
 
 # ── helpers de validação e data ─────────────────────────────────────────────
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
+
+def aprovar_acao_master(chave, mensagem):
+    # Helper simples caso não tenha essa função declarada
+    return st.checkbox(f"Confirmo: {mensagem}", key=chave)
 
 def formatar_numero(raw: str):
     digits = re.sub(r'\D', '', str(raw))
@@ -321,6 +325,12 @@ def gerar_template_telefonia():
     with pd.ExcelWriter(buf, engine='openpyxl') as writer: df.to_excel(writer, index=False)
     return buf.getvalue()
 
+def gerar_template_depara():
+    df = pd.DataFrame({'De': ['CC_Velho1'], 'Para': ['CC_Novo1']})
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+    return buf.getvalue()
+
 # --- CONTROLE DE ACESSO ---
 if 'sessao_id' not in st.session_state: st.session_state.sessao_id = str(uuid.uuid4())
 
@@ -330,7 +340,7 @@ with get_conn() as conn:
         c.execute("INSERT INTO acessos (sessao_id, ultimo_clique) VALUES (%s, %s) ON CONFLICT (sessao_id) DO UPDATE SET ultimo_clique = EXCLUDED.ultimo_clique", (st.session_state.sessao_id, datetime.now()))
         c.execute("SELECT COUNT(*) as total FROM acessos")
         total_ativos = c.fetchone()['total']
-    conn.commit()
+    conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
 
 if total_ativos > LIMITE_PESSOAS:
     st.error(f"⚠️ O sistema está lotado ({total_ativos}/{LIMITE_PESSOAS} usuários). Tente novamente em 1 minuto.")
@@ -500,7 +510,7 @@ else:
                         with get_conn() as conn:
                             with conn.cursor() as cur:
                                 cur.execute("UPDATE usuarios SET senha=%s WHERE id=%s", (nova_senha, user['id']))
-                            conn.commit()
+                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                         st.session_state.usuario_logado['senha'] = nova_senha
                         st.success("✅ Senha atualizada com sucesso!")
 
@@ -549,7 +559,7 @@ else:
                                                     INSERT INTO movimentacoes (tipo, cc_destino, solicitante_email, retirante_nome, codigo_item, quantidade)
                                                     VALUES (%s, %s, %s, %s, %s, %s)
                                                 ''', (tipo_db, cc_req, user['email'], retirante, cod_req, qtd_req))
-                                            conn.commit()
+                                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                                         st.success("✅ Solicitação enviada!")
 
             if len(abas_req) > 1:
@@ -587,6 +597,7 @@ else:
                                                         cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (req['codigo_item'], cur.fetchone()['Descricao'], req['quantidade'], req['cc_destino']))
                                                 cur.execute("UPDATE movimentacoes SET status = 'Aprovado', data_aprovacao = NOW(), aprovador_email = %s WHERE id = %s", (user['email'], req['id']))
                                                 cur.execute("COMMIT;")
+                                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                                         st.success("✅ Aprovado!")
                                         st.cache_data.clear()
                                         st.rerun()
@@ -598,7 +609,7 @@ else:
                                     with get_conn() as conn:
                                         with conn.cursor() as cur: 
                                             cur.execute("UPDATE movimentacoes SET status = 'Rejeitado', aprovador_email = %s WHERE id = %s", (user['email'], req['id']))
-                                        conn.commit()
+                                        conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                                     st.rerun()
 
                     st.divider()
@@ -709,7 +720,7 @@ else:
                                             else:
                                                 cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (cod, desc_existente or desc_input, qtd, cc_sel))
                                                 st.success("✅ Cadastrado com sucesso.")
-                                    conn.commit()
+                                    conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                                 st.cache_data.clear()
 
             with tabs_est[1]:
@@ -739,7 +750,7 @@ else:
                                             db_set.add((row['Codigo'], row['CC']))
                                     if inserts: cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)', inserts)
                                     if updates: cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', updates)
-                            conn.commit()
+                                conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                             st.success("✅ Importação concluída!")
                             del df_upload, db_set
                             gc.collect()
@@ -779,7 +790,7 @@ else:
                                         else:
                                             cur.execute('INSERT INTO telefonia ("Numero","Conta","Operadora","Colaborador","CC","Status","Gestor") VALUES (%s,%s,%s,%s,%s,%s,%s)', (num_fmt, conta_n, oper_n, colab_n.strip(), cc_n, 'Ativo', loc_n.strip()))
                                             st.success(f"✅ Linha **{num_fmt}** cadastrada!")
-                                    conn.commit()
+                                    conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                                 st.cache_data.clear()
 
                 elif acao_tel == "✏️ Editar":
@@ -810,7 +821,7 @@ else:
                                         with get_conn() as conn:
                                             with conn.cursor() as cur:
                                                 cur.execute('UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Gestor"=%s WHERE "Numero"=%s', (conta_e, oper_e, colab_e.strip(), cc_e, loc_e.strip(), num_fmt_ed))
-                                        conn.commit()
+                                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                                         st.success("✅ Linha atualizada!")
                                         st.cache_data.clear()
 
@@ -832,7 +843,7 @@ else:
                                     with get_conn() as conn:
                                         with conn.cursor() as cur:
                                             cur.execute('UPDATE telefonia SET "Status"=%s WHERE "Numero"=%s', (novo_status, num_fmt_st))
-                                    conn.commit()
+                                        conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                                     st.success(f"✅ Status alterado!")
                                     st.cache_data.clear()
                                     st.rerun()
@@ -856,7 +867,7 @@ else:
                                         nums_db.add(num_fmt)
                             if inserts_tel: cur.executemany('INSERT INTO telefonia ("Numero","Conta","Operadora","Colaborador","CC","Status","Gestor") VALUES (%s,%s,%s,%s,%s,%s,%s)', inserts_tel)
                             if updates_tel: cur.executemany('UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Status"=%s,"Gestor"=%s WHERE "Numero"=%s', updates_tel)
-                    conn.commit()
+                        conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                     st.success("✅ Importação concluída!")
                     del df_tel_up, nums_db
                     gc.collect()
@@ -892,7 +903,7 @@ else:
                                 with get_conn() as conn:
                                     with conn.cursor() as cur:
                                         cur.execute('INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s,%s,%s,%s,%s)', (n_email.lower(), n_senha, n_email.split('@')[0].capitalize(), n_nivel, "Todos" if "Todos" in n_cc else "|".join(n_cc)))
-                                conn.commit()
+                                    conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                                 st.success("✅ Usuário criado!")
                                 st.rerun()
                             except: st.error("Email já cadastrado.")
@@ -916,7 +927,7 @@ else:
                                 with get_conn() as conn:
                                     with conn.cursor() as cur:
                                         cur.execute("UPDATE usuarios SET nivel=%s, cc_permitido=%s WHERE email=%s", (n_nivel, cc_db_val, usr_selecionado))
-                                conn.commit()
+                                    conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                                 st.success("✅ Usuário atualizado!")
                                 st.rerun()
                                 
@@ -931,8 +942,9 @@ else:
                     novo_cc = st.text_input("Nome:")
                     if novo_cc and aprovar_acao_master("new_cc", f"Criar CC: {novo_cc}"):
                         with get_conn() as conn:
-                            with conn.cursor() as cur: cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (novo_cc,))
-                        conn.commit()
+                            with conn.cursor() as cur: 
+                                cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (novo_cc,))
+                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                         st.success("Centro de Custo cadastrado!")
                         st.cache_data.clear()
                         st.rerun()
@@ -947,7 +959,7 @@ else:
                                 cur.execute('UPDATE estoque   SET "CC" = %s WHERE "CC" = %s', (cc_novo, cc_antigo))
                                 cur.execute('UPDATE telefonia SET "CC" = %s WHERE "CC" = %s', (cc_novo, cc_antigo))
                                 cur.execute("DELETE FROM centros_custo WHERE nome = %s", (cc_antigo,))
-                        conn.commit()
+                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                         st.success("Renomeado com sucesso!")
                         st.cache_data.clear()
                         st.rerun()
@@ -970,7 +982,7 @@ else:
                                             cur.execute('UPDATE estoque   SET "CC" = %s WHERE "CC" = %s', (para, de))
                                             cur.execute('UPDATE telefonia SET "CC" = %s WHERE "CC" = %s', (para, de))
                                             cur.execute("DELETE FROM centros_custo WHERE nome = %s", (de,))
-                            conn.commit()
+                                conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                             st.success("De/Para em massa concluído!")
                             st.cache_data.clear()
                             st.rerun()
@@ -981,7 +993,7 @@ else:
                         with get_conn() as conn:
                             with conn.cursor() as cur:
                                 for cc in novos_ccs: cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (cc,))
-                        conn.commit()
+                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                         st.success("Centros de Custo processados!")
                         st.cache_data.clear()
                         st.rerun()
@@ -991,24 +1003,45 @@ else:
                 c_colab1, c_colab2 = st.columns(2)
                 
                 with c_colab1:
+                    st.markdown("##### 👤 Inclusão Individual")
                     novo_colab = st.text_input("Cadastrar Novo Colaborador (Nome Completo):")
-                    if st.button("➕ Adicionar à Lista") and novo_colab:
+                    if st.button("➕ Adicionar Individual") and novo_colab:
                         with get_conn() as conn:
                             with conn.cursor() as cur:
                                 cur.execute("INSERT INTO colaboradores (nome) VALUES (%s) ON CONFLICT DO NOTHING", (novo_colab.strip().upper(),))
-                        conn.commit()
+                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                         st.success(f"{novo_colab} adicionado!")
                         st.cache_data.clear()
                         st.rerun()
+
+                    st.divider()
+
+                    st.markdown("##### 📑 Inclusão em Massa (Copiar e Colar)")
+                    lista_massa = st.text_area("Cole a lista de colaboradores (um nome por linha):", height=150)
+                    if st.button("➕ Processar Inclusão em Massa") and lista_massa:
+                        novos_colabs = [nome.strip().upper() for nome in lista_massa.split('\n') if nome.strip()]
+                        
+                        if novos_colabs:
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.executemany(
+                                        "INSERT INTO colaboradores (nome) VALUES (%s) ON CONFLICT DO NOTHING",
+                                        [(nome,) for nome in novos_colabs]
+                                    )
+                                conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
+                            st.success(f"✅ {len(novos_colabs)} colaboradores processados e adicionados!")
+                            st.cache_data.clear()
+                            st.rerun()
                 
                 with c_colab2:
+                    st.markdown("##### 🗑️ Remoção")
                     if lista_colabs:
                         del_colab = st.selectbox("Selecione para Remover:", lista_colabs)
                         if st.button("🗑️ Remover Colaborador"):
                             with get_conn() as conn:
                                 with conn.cursor() as cur:
                                     cur.execute("DELETE FROM colaboradores WHERE nome = %s", (del_colab,))
-                            conn.commit()
+                                conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                             st.success(f"{del_colab} removido!")
                             st.cache_data.clear()
                             st.rerun()
@@ -1023,7 +1056,7 @@ else:
                         with get_conn() as conn:
                             with conn.cursor() as cur:
                                 cur.execute('DELETE FROM estoque WHERE "Codigo"=%s', (cod_excluir,))
-                        conn.commit()
+                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                         st.success("Código apagado!")
                         st.cache_data.clear()
                         st.rerun()
@@ -1036,7 +1069,7 @@ else:
                             with get_conn() as conn:
                                 with conn.cursor() as cur:
                                     cur.execute('DELETE FROM telefonia WHERE "Numero"=%s', (num_del_fmt,))
-                            conn.commit()
+                                conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                             st.success("Linha excluída!")
                             st.cache_data.clear()
                             st.rerun()
@@ -1049,7 +1082,7 @@ else:
                             with conn.cursor() as cur:
                                 if "Zerar" in opcao_est: cur.execute('UPDATE estoque SET "Quantidade" = 0')
                                 else: cur.execute("DELETE FROM estoque")
-                        conn.commit()
+                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                         st.success("Estoque limpo!")
                         st.cache_data.clear()
                         st.rerun()
@@ -1061,7 +1094,7 @@ else:
                             with conn.cursor() as cur:
                                 if "Inativar" in opcao_tel: cur.execute("UPDATE telefonia SET \"Status\" = 'Inativo'")
                                 else: cur.execute("DELETE FROM telefonia")
-                        conn.commit()
+                            conn.commit() # CORRIGIDO PARA DENTRO DO WITH CONN
                         st.success("Telefonia limpa!")
                         st.cache_data.clear()
                         st.rerun()
