@@ -923,8 +923,7 @@ else:
                 
                 acao_usr = st.radio("Ação:", ["➕ Criar Novo", "✏️ Editar Existente", "🗑️ Excluir"], horizontal=True)
                 
-if acao_usr == "➕ Criar Novo":
-                    # Botão de emergência caso a sequência de IDs do Postgres tenha se perdido
+                if acao_usr == "➕ Criar Novo":
                     if st.button("🛠️ Corrigir Sequência de IDs do Banco"):
                         try:
                             with get_conn() as conn:
@@ -954,7 +953,7 @@ if acao_usr == "➕ Criar Novo":
                                 if "usuarios_email_key" in erro_real or "usuarios_email_unique" in erro_real:
                                     st.error("⛔ Este e-mail já existe de fato no banco de dados.")
                                 elif "usuarios_pkey" in erro_real:
-                                    st.error("⛔ Erro estrutural: Choque de ID. Clique no botão 'Corrigir Sequência de IDs do Banco' acima e tente novamente.")
+                                    st.error("⛔ Erro estrutural: Choque de ID. Clique no botão 'Corrigir Sequência' acima e tente novamente.")
                                 elif "usuarios_nivel_check" in erro_real:
                                     st.error("⛔ O nível de acesso selecionado não é aceito pelo banco.")
                                 else:
