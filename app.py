@@ -573,4 +573,555 @@ else:
                                         df_disp = df[(df['Codigo'] == cod_req) & (df['CC'] == cc_req)]
                                         saldo = df_disp['Quantidade'].sum() if not df_disp.empty else 0
                                         if saldo < qtd_req:
-                                            st.error(f"⛔ Saldo insuficiente. Estoque atual no CC {cc_req
+                                            st.error(f"⛔ Saldo insuficiente. Estoque atual no CC {cc_req}: {saldo} unid.")
+                                            pode_prosseguir = False
+                                    
+                                    if pode_prosseguir:
+                                        with get_conn() as conn:
+                                            with conn.cursor() as cur:
+                                                cur.execute('''
+                                                    INSERT INTO movimentacoes (tipo, cc_destino, solicitante_email, retirante_nome, codigo_item, quantidade)
+                                                    VALUES (%s, %s, %s, %s, %s, %s)
+                                                ''', (tipo_db, cc_req, user['email'], retirante, cod_req, qtd_req))
+                                        st.success("✅ Solicitação enviada!")
+
+            if len(abas_req) > 1:
+                with tabs_req[1]:
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT * FROM movimentacoes WHERE status = 'Pendente' ORDER BY data_solicitacao ASC")
+                            pendentes = cur.fetchall()
+                    
+                    if not pendentes:
+                        st.info("Nenhuma solicitação pendente.")
+                    else:
+                        for req in pendentes:
+                            with st.expander(f"[{req['tipo']}] Item: {req['codigo_item']} | Qtd: {req['quantidade']} | Resp: {req['retirante_nome']}"):
+                                st.write(f"**CC:** {req['cc_destino']} | **Solicitante:** {req['solicitante_email']}")
+                                c_btn1, c_btn2, _ = st.columns([1, 1, 3])
+                                if c_btn1.button("✅ Aprovar", key=f"apr_{req['id']}"):
+                                    try:
+                                        with get_conn() as conn:
+                                            with conn.cursor() as cur:
+                                                cur.execute("BEGIN;")
+                                                if req['tipo'] == 'RDM':
+                                                    cur.execute('SELECT "Quantidade" FROM estoque WHERE "Codigo"=%s AND "CC"=%s FOR UPDATE', (req['codigo_item'], req['cc_destino']))
+                                                    saldo_db = cur.fetchone()
+                                                    if not saldo_db or saldo_db['Quantidade'] < req['quantidade']:
+                                                        st.error("Alerta: Sem estoque!")
+                                                        cur.execute("ROLLBACK;")
+                                                        st.stop()
+                                                    cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
+                                                else:
+                                                    cur.execute('SELECT id FROM estoque WHERE "Codigo"=%s AND "CC"=%s', (req['codigo_item'], req['cc_destino']))
+                                                    if cur.fetchone():
+                                                        cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
+                                                    else:
+                                                        cur.execute('SELECT "Descricao" FROM estoque WHERE "Codigo"=%s LIMIT 1', (req['codigo_item'],))
+                                                        cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (req['codigo_item'], cur.fetchone()['Descricao'], req['quantidade'], req['cc_destino']))
+                                                cur.execute("UPDATE movimentacoes SET status = 'Aprovado', data_aprovacao = NOW(), aprovador_email = %s WHERE id = %s", (user['email'], req['id']))
+                                                cur.execute("COMMIT;")
+                                        st.success("✅ Aprovado!")
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Erro: {e}")
+                                if c_btn2.button("❌ Rejeitar", key=f"rej_{req['id']}"):
+                                    with get_conn() as conn:
+                                        with conn.cursor() as cur:
+                                            cur.execute("UPDATE movimentacoes SET status = 'Rejeitado', aprovador_email = %s WHERE id = %s", (user['email'], req['id']))
+                                    st.rerun()
+
+                    st.divider()
+                    st.subheader("🖨️ Documentos HTML")
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT id, tipo, data_aprovacao FROM movimentacoes WHERE status = 'Aprovado' ORDER BY data_aprovacao DESC LIMIT 10")
+                            aprovados = cur.fetchall()
+                    
+                    for ap in aprovados:
+                        col_txt, col_dl = st.columns([3, 1])
+                        dt_apr = ajustar_fuso_br(ap['data_aprovacao'])
+                        col_txt.write(f"#{ap['id']} - {ap['tipo']} (Aprovado em {dt_apr.strftime('%d/%m %H:%M')})")
+                        
+                        html_str = gerar_html_comprovante(ap['id'])
+                        if html_str:
+                            col_dl.download_button(
+                                label="🖨️ Baixar Comprovante",
+                                data=html_str,
+                                file_name=f"Comprovante_{ap['tipo']}_{ap['id']}.html",
+                                mime="text/html",
+                                key=f"dl_html_{ap['id']}"
+                            )
+
+        # ---------------------------------------------------------
+        # MÓDULO: CARGA POR COLABORADOR
+        # ---------------------------------------------------------
+        elif modulo_ativo == "📋 Carga por Colaborador":
+            st.subheader("🎒 Rastreabilidade de Materiais em Posse")
+            st.info("Calcula automaticamente o saldo físico de materiais com cada colaborador.")
+            
+            colab_alvo = st.selectbox("Selecione o Colaborador:", [""] + lista_colabs)
+            
+            if colab_alvo:
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT 
+                                m.codigo_item as "Código", 
+                                MAX(e."Descricao") as "Descrição",
+                                SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) - 
+                                SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END) as "Saldo em Mãos"
+                            FROM movimentacoes m
+                            LEFT JOIN estoque e ON m.codigo_item = e."Codigo"
+                            WHERE m.status = 'Aprovado' AND m.retirante_nome = %s
+                            GROUP BY m.codigo_item
+                            HAVING (SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) - SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END)) > 0
+                        """, (colab_alvo,))
+                        carga = cur.fetchall()
+                
+                if not carga:
+                    st.success(f"✅ O colaborador **{colab_alvo}** não possui materiais pendentes de devolução.")
+                else:
+                    st.warning(f"⚠️ Materiais atualmente alocados para **{colab_alvo}**:")
+                    st.dataframe(pd.DataFrame(carga), use_container_width=True, hide_index=True)
+                    
+                st.divider()
+                st.markdown("#### Histórico de Movimentações")
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute('''
+                            SELECT id, tipo as "Operação", codigo_item as "Código", quantidade as "Qtd", data_aprovacao as "Data Aprovação"
+                            FROM movimentacoes 
+                            WHERE status = 'Aprovado' AND retirante_nome = %s
+                            ORDER BY data_aprovacao DESC
+                        ''', (colab_alvo,))
+                        hist = cur.fetchall()
+                if hist:
+                    df_h = pd.DataFrame(hist)
+                    df_h['Data Aprovação'] = pd.to_datetime(df_h['Data Aprovação']).dt.tz_localize('UTC').dt.tz_convert('America/Sao_Paulo').dt.strftime('%d/%m/%Y %H:%M')
+                    st.dataframe(df_h, hide_index=True)
+
+        # ---------------------------------------------------------
+        # MÓDULO 2: ESTOQUE 
+        # ---------------------------------------------------------
+        elif modulo_ativo == "📦 Gestão de Estoque":
+            tabs_est = st.tabs(["📝 Registro Manual", "📤 Carga Excel"])
+            with tabs_est[0]:
+                with st.form("registro", clear_on_submit=True):
+                    c1, c2 = st.columns(2)
+                    cod, desc_input = c1.text_input("Código:"), c2.text_input("Descrição:")
+                    c3, c4, c5 = st.columns([2, 2, 1])
+                    cc_sel, op, qtd = c3.selectbox("Centro de Custo:", lista_cc), c4.selectbox("Operação:", ["Entrada", "Saída"]), c5.number_input("Qtd:", min_value=1, step=1)
+
+                    if st.form_submit_button("✅ Confirmar"):
+                        if not cod:
+                            st.error("⛔ Informe o Código.")
+                        else:
+                            desc_existente = buscar_descricao_por_codigo(cod)
+                            if not desc_existente and not desc_input:
+                                st.error("⛔ Descrição obrigatória para item novo.")
+                            elif desc_existente and desc_input and desc_input.strip() != desc_existente.strip():
+                                st.error(f"⛔ Conflito! Código já é: {desc_existente}")
+                            else:
+                                with get_conn() as conn:
+                                    with conn.cursor() as cur:
+                                        cur.execute('SELECT "Quantidade" FROM estoque WHERE "Codigo"=%s AND "CC"=%s', (cod, cc_sel))
+                                        res = cur.fetchone()
+                                        if res:
+                                            if op == "Saída":
+                                                if res['Quantidade'] < qtd:
+                                                    st.error("⛔ FALTA DE ESTOQUE!")
+                                                else:
+                                                    cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, cod, cc_sel))
+                                                    st.success("✅ Saída registrada.")
+                                            else:
+                                                cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, cod, cc_sel))
+                                                st.success("✅ Entrada registrada.")
+                                        else:
+                                            if op == "Saída":
+                                                st.error("⛔ ITEM NÃO ENCONTRADO.")
+                                            else:
+                                                cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (cod, desc_existente or desc_input, qtd, cc_sel))
+                                                st.success("✅ Cadastrado com sucesso.")
+                                st.cache_data.clear()
+
+            with tabs_est[1]:
+                st.download_button("⬇️ Template Inventário", gerar_template_xlsx(), "template.xlsx")
+                arquivo = st.file_uploader("Arquivo Excel (.xlsx):", type=["xlsx"])
+                if arquivo and st.button("🚀 Processar Importação"):
+                    df_upload = pd.read_excel(arquivo, engine='openpyxl')
+                    if {'Codigo', 'Descricao', 'Quantidade', 'CC'} - set(df_upload.columns):
+                        st.error("Colunas inválidas.")
+                    else:
+                        df_upload['Codigo'] = df_upload['Codigo'].astype(str).str.strip()
+                        df_upload['CC'] = df_upload['CC'].astype(str).str.strip()
+                        df_upload['Quantidade'] = pd.to_numeric(df_upload['Quantidade'], errors='coerce')
+                        df_upload = df_upload.dropna(subset=['Quantidade'])
+                        
+                        invalid_ccs = set(df_upload['CC'].unique()) - set(lista_cc)
+                        if invalid_ccs:
+                            st.error(f"⛔ CCs não encontrados: {', '.join(invalid_ccs)}")
+                        else:
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute('SELECT "Codigo", "CC" FROM estoque')
+                                    db_set = set((r['Codigo'], r['CC']) for r in cur.fetchall())
+                                    inserts, updates = [], []
+                                    for _, row in df_upload.iterrows():
+                                        if (row['Codigo'], row['CC']) in db_set:
+                                            updates.append((row['Quantidade'], row['Codigo'], row['CC']))
+                                        else:
+                                            inserts.append((row['Codigo'], row['Descricao'], row['Quantidade'], row['CC']))
+                                            db_set.add((row['Codigo'], row['CC']))
+                                    if inserts:
+                                        cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)', inserts)
+                                    if updates:
+                                        cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', updates)
+                            st.success("✅ Importação concluída!")
+                            del df_upload, db_set
+                            gc.collect()
+                            st.cache_data.clear()
+                            st.rerun()
+
+        # ---------------------------------------------------------
+        # MÓDULO 3: TELEFONIA 
+        # ---------------------------------------------------------
+        elif modulo_ativo == "📱 Telefonia":
+            tabs_tel = st.tabs(["📱 Registro Individual", "📤 Carga em Massa"])
+            with tabs_tel[0]:
+                st.subheader("Registrar / Editar Linha")
+                acao_tel = st.radio("Operação:", ["➕ Nova", "✏️ Editar", "🔄 Status"], horizontal=True)
+                
+                if acao_tel == "➕ Nova":
+                    with st.form("nova_linha", clear_on_submit=True):
+                        tc1, tc2 = st.columns(2)
+                        num_raw = tc1.text_input("Número (ex: 11 99999-0001):")
+                        conta_n = tc2.selectbox("Conta:", CONTAS_TELEFONIA)
+                        tc3, tc4 = st.columns(2)
+                        oper_n = tc3.selectbox("Operadora:", OPERADORAS_TELEFONIA)
+                        colab_n = tc4.text_input("Nome do Colaborador:")
+                        tc5, tc6 = st.columns(2)
+                        cc_n = tc5.selectbox("Centro de Custo:", lista_cc)
+                        loc_n = tc6.text_input("Gestor:")
+
+                        if st.form_submit_button("✅ Cadastrar Linha"):
+                            num_fmt = formatar_numero(num_raw)
+                            if not num_fmt:
+                                st.error("⛔ Número inválido.")
+                            elif not colab_n.strip():
+                                st.error("⛔ Informe o nome do colaborador.")
+                            else:
+                                with get_conn() as conn:
+                                    with conn.cursor() as cur:
+                                        cur.execute('SELECT id FROM telefonia WHERE "Numero"=%s', (num_fmt,))
+                                        if cur.fetchone():
+                                            st.error(f"⛔ O número **{num_fmt}** já está cadastrado.")
+                                        else:
+                                            cur.execute('INSERT INTO telefonia ("Numero","Conta","Operadora","Colaborador","CC","Status","Gestor") VALUES (%s,%s,%s,%s,%s,%s,%s)', (num_fmt, conta_n, oper_n, colab_n.strip(), cc_n, 'Ativo', loc_n.strip()))
+                                            st.success(f"✅ Linha **{num_fmt}** cadastrada!")
+                                st.cache_data.clear()
+
+                elif acao_tel == "✏️ Editar":
+                    num_editar = st.text_input("Digite o número a editar:")
+                    if num_editar:
+                        num_fmt_ed = formatar_numero(num_editar)
+                        if not num_fmt_ed:
+                            st.error("⛔ Formato inválido.")
+                        else:
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute('SELECT * FROM telefonia WHERE "Numero"=%s', (num_fmt_ed,))
+                                    linha = cur.fetchone()
+                            if not linha:
+                                st.warning("Número não encontrado.")
+                            else:
+                                with st.form("editar_linha"):
+                                    ec1, ec2 = st.columns(2)
+                                    idx_conta = CONTAS_TELEFONIA.index(linha['Conta']) if linha['Conta'] in CONTAS_TELEFONIA else 0
+                                    idx_oper = OPERADORAS_TELEFONIA.index(linha['Operadora']) if linha['Operadora'] in OPERADORAS_TELEFONIA else 0
+                                    conta_e = ec1.selectbox("Conta:", CONTAS_TELEFONIA, index=idx_conta)
+                                    oper_e = ec2.selectbox("Operadora:", OPERADORAS_TELEFONIA, index=idx_oper)
+                                    ec3, ec4 = st.columns(2)
+                                    colab_e = ec3.text_input("Colaborador:", value=linha['Colaborador'] or "")
+                                    loc_e = ec4.text_input("Gestor:", value=linha['Gestor'] or "")
+                                    idx_cc = lista_cc.index(linha['CC']) if linha['CC'] in lista_cc else 0
+                                    cc_e = st.selectbox("Centro de Custo:", lista_cc, index=idx_cc)
+
+                                    if st.form_submit_button("💾 Salvar Alterações"):
+                                        with get_conn() as conn:
+                                            with conn.cursor() as cur:
+                                                cur.execute('UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Gestor"=%s WHERE "Numero"=%s', (conta_e, oper_e, colab_e.strip(), cc_e, loc_e.strip(), num_fmt_ed))
+                                        st.success("✅ Linha atualizada!")
+                                        st.cache_data.clear()
+
+                else:
+                    num_status = st.text_input("Digite o número:")
+                    if num_status:
+                        num_fmt_st = formatar_numero(num_status)
+                        if not num_fmt_st:
+                            st.error("⛔ Formato inválido.")
+                        else:
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute('SELECT "Status" FROM telefonia WHERE "Numero"=%s', (num_fmt_st,))
+                                    res_st = cur.fetchone()
+                            if not res_st:
+                                st.warning("Número não encontrado.")
+                            else:
+                                st.info(f"Status atual: **{res_st['Status']}**")
+                                novo_status = "Inativo" if res_st['Status'] == "Ativo" else "Ativo"
+                                if st.button(f"🔄 Alterar para **{novo_status}**"):
+                                    with get_conn() as conn:
+                                        with conn.cursor() as cur:
+                                            cur.execute('UPDATE telefonia SET "Status"=%s WHERE "Numero"=%s', (novo_status, num_fmt_st))
+                                    st.success(f"✅ Status alterado!")
+                                    st.cache_data.clear()
+                                    st.rerun()
+            with tabs_tel[1]:
+                st.download_button("⬇️ Template Telefonia", gerar_template_telefonia(), "tel.xlsx")
+                arq_tel = st.file_uploader("Arquivo Telefonia (.xlsx):", type=["xlsx"])
+                if arq_tel and st.button("🚀 Importar"):
+                    df_tel_up = pd.read_excel(arq_tel, engine='openpyxl').fillna('')
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute('SELECT "Numero" FROM telefonia')
+                            nums_db = set(r['Numero'] for r in cur.fetchall())
+                            inserts_tel, updates_tel = [], []
+                            for _, r in df_tel_up.iterrows():
+                                num_fmt = formatar_numero(r['Numero'])
+                                if num_fmt and r['Conta'] in CONTAS_TELEFONIA and (r['CC'] in lista_cc or r['CC'] == ''):
+                                    st_v = str(r['Status']).capitalize() if str(r['Status']).capitalize() in STATUS_TELEFONIA else 'Ativo'
+                                    if num_fmt in nums_db:
+                                        updates_tel.append((r['Conta'], r['Operadora'], r['Colaborador'], r['CC'], st_v, r['Gestor'], num_fmt))
+                                    else:
+                                        inserts_tel.append((num_fmt, r['Conta'], r['Operadora'], r['Colaborador'], r['CC'], st_v, r['Gestor']))
+                                        nums_db.add(num_fmt)
+                            if inserts_tel:
+                                cur.executemany('INSERT INTO telefonia ("Numero","Conta","Operadora","Colaborador","CC","Status","Gestor") VALUES (%s,%s,%s,%s,%s,%s,%s)', inserts_tel)
+                            if updates_tel:
+                                cur.executemany('UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Status"=%s,"Gestor"=%s WHERE "Numero"=%s', updates_tel)
+                    st.success("✅ Importação concluída!")
+                    del df_tel_up, nums_db
+                    gc.collect()
+                    st.cache_data.clear()
+                    st.rerun()
+
+        # ---------------------------------------------------------
+        # MÓDULO 4: ADMINISTRAÇÃO 
+        # ---------------------------------------------------------
+        elif modulo_ativo == "⚙️ Administração":
+            tabs_admin = st.tabs(["👥 Usuários", "🏢 Centros de Custo", "👷 Colaboradores", "🗑️ Exclusões"])
+
+            with tabs_admin[0]:
+                st.subheader("Gestão de Acessos")
+                
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id, email, nome, nivel, cc_permitido FROM usuarios")
+                        lista_usuarios = cur.fetchall()
+                
+                acao_usr = st.radio("Ação:", ["➕ Criar Novo", "✏️ Editar Existente"], horizontal=True)
+                
+                if acao_usr == "➕ Criar Novo":
+                    with st.form("form_usr"):
+                        uc1, uc2 = st.columns(2)
+                        n_email, n_senha = uc1.text_input("E-mail:"), uc2.text_input("Senha Inicial:", type="password")
+                        uc3, uc4 = st.columns(2)
+                        n_nivel = uc3.selectbox("Nível:", ["Leitor", "Gestor", "Almoxarife", "Master"])
+                        n_cc = uc4.multiselect("CCs:", ["Todos"] + lista_cc, default=["Todos"])
+                        
+                        if st.form_submit_button("Criar Usuário") and n_email and n_senha:
+                            try:
+                                with get_conn() as conn:
+                                    with conn.cursor() as cur:
+                                        cur.execute('INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s,%s,%s,%s,%s)', (n_email.lower(), n_senha, n_email.split('@')[0].capitalize(), n_nivel, "Todos" if "Todos" in n_cc else "|".join(n_cc)))
+                                st.success("✅ Usuário criado!")
+                                st.rerun()
+                            except:
+                                st.error("Email já cadastrado.")
+                
+                else:
+                    usr_selecionado = st.selectbox("Selecione o Usuário:", [u['email'] for u in lista_usuarios])
+                    if usr_selecionado:
+                        usr_data = next(u for u in lista_usuarios if u['email'] == usr_selecionado)
+                        with st.form("form_edit_usr"):
+                            st.write(f"Editando permissões de: **{usr_data['nome']}**")
+                            
+                            idx_nivel = ["Leitor", "Gestor", "Almoxarife", "Master"].index(usr_data['nivel']) if usr_data['nivel'] in ["Leitor", "Gestor", "Almoxarife", "Master"] else 0
+                            n_nivel = st.selectbox("Nível:", ["Leitor", "Gestor", "Almoxarife", "Master"], index=idx_nivel)
+
+                            cc_atuais = [c for c in usr_data['cc_permitido'].split('|') if c in ["Todos"] + lista_cc]
+                            if not cc_atuais:
+                                cc_atuais = ["Todos"]
+                            n_cc = st.multiselect("CCs:", ["Todos"] + lista_cc, default=cc_atuais)
+
+                            if st.form_submit_button("💾 Salvar Alterações"):
+                                cc_db_val = "Todos" if "Todos" in n_cc else "|".join(n_cc)
+                                with get_conn() as conn:
+                                    with conn.cursor() as cur:
+                                        cur.execute("UPDATE usuarios SET nivel=%s, cc_permitido=%s WHERE email=%s", (n_nivel, cc_db_val, usr_selecionado))
+                                st.success("✅ Usuário atualizado!")
+                                st.rerun()
+                                
+                st.divider()
+                st.write("**Usuários Cadastrados:**")
+                st.dataframe(pd.DataFrame(lista_usuarios), hide_index=True)
+
+            with tabs_admin[1]:
+                c_sec1, c_sec2 = st.columns(2)
+                with c_sec1:
+                    st.subheader("➕ Novo Centro de Custo")
+                    novo_cc = st.text_input("Nome:")
+                    if novo_cc and aprovar_acao_master("new_cc", f"Criar CC: {novo_cc}"):
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (novo_cc,))
+                        st.success("Centro de Custo cadastrado!")
+                        st.cache_data.clear()
+                        st.rerun()
+                with c_sec2:
+                    st.subheader("🔄 De/Para (Individual)")
+                    cc_antigo = st.selectbox("De:", lista_cc)
+                    cc_novo = st.text_input("Para (Novo Nome):")
+                    if cc_novo and cc_antigo and aprovar_acao_master("rename_cc", f"Renomear {cc_antigo} → {cc_novo}"):
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (cc_novo,))
+                                cur.execute('UPDATE estoque   SET "CC" = %s WHERE "CC" = %s', (cc_novo, cc_antigo))
+                                cur.execute('UPDATE telefonia SET "CC" = %s WHERE "CC" = %s', (cc_novo, cc_antigo))
+                                cur.execute("DELETE FROM centros_custo WHERE nome = %s", (cc_antigo,))
+                        st.success("Renomeado com sucesso!")
+                        st.cache_data.clear()
+                        st.rerun()
+
+                st.divider()
+                st.subheader("📂 De/Para em Massa e Inclusão")
+                c_up1, c_up2 = st.columns(2)
+                with c_up1:
+                    st.download_button("⬇️ Template De/Para", gerar_template_depara(), "template_depara.xlsx")
+                    arq_depara = st.file_uploader("Arquivo De/Para (.xlsx):", type=["xlsx"])
+                    if arq_depara and aprovar_acao_master("depara_massa", "Processar De/Para em massa"):
+                        df_dp = pd.read_excel(arq_depara)
+                        if 'De' in df_dp.columns and 'Para' in df_dp.columns:
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    for _, row in df_dp.iterrows():
+                                        de, para = str(row['De']).strip(), str(row['Para']).strip()
+                                        if de != 'nan' and para != 'nan':
+                                            cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (para,))
+                                            cur.execute('UPDATE estoque   SET "CC" = %s WHERE "CC" = %s', (para, de))
+                                            cur.execute('UPDATE telefonia SET "CC" = %s WHERE "CC" = %s', (para, de))
+                                            cur.execute("DELETE FROM centros_custo WHERE nome = %s", (de,))
+                            st.success("De/Para em massa concluído!")
+                            st.cache_data.clear()
+                            st.rerun()
+                with c_up2:
+                    ccs_massa = st.text_area("Lista de CCs (um por linha):")
+                    if ccs_massa and aprovar_acao_master("add_cc_massa", "Adicionar CCs em Massa"):
+                        novos_ccs = [c.strip() for c in ccs_massa.split('\n') if c.strip()]
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                for cc in novos_ccs:
+                                    cur.execute("INSERT INTO centros_custo (nome) VALUES (%s) ON CONFLICT DO NOTHING", (cc,))
+                        st.success("Centros de Custo processados!")
+                        st.cache_data.clear()
+                        st.rerun()
+
+            with tabs_admin[2]:
+                st.subheader("👷 Lista de Nomes para Retirada de Material")
+                c_colab1, c_colab2 = st.columns(2)
+                
+                with c_colab1:
+                    st.markdown("##### 👤 Inclusão Individual")
+                    novo_colab = st.text_input("Cadastrar Novo Colaborador (Nome Completo):")
+                    if st.button("➕ Adicionar Individual") and novo_colab:
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute("INSERT INTO colaboradores (nome) VALUES (%s) ON CONFLICT DO NOTHING", (novo_colab.strip().upper(),))
+                        st.success(f"{novo_colab} adicionado!")
+                        st.cache_data.clear()
+                        st.rerun()
+
+                    st.divider()
+
+                    st.markdown("##### 📑 Inclusão em Massa (Copiar e Colar)")
+                    lista_massa = st.text_area("Cole a lista de colaboradores (um nome por linha):", height=150)
+                    if st.button("➕ Processar Inclusão em Massa") and lista_massa:
+                        novos_colabs = [nome.strip().upper() for nome in lista_massa.split('\n') if nome.strip()]
+                        
+                        if novos_colabs:
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.executemany(
+                                        "INSERT INTO colaboradores (nome) VALUES (%s) ON CONFLICT DO NOTHING",
+                                        [(nome,) for nome in novos_colabs]
+                                    )
+                            st.success(f"✅ {len(novos_colabs)} colaboradores processados e adicionados!")
+                            st.cache_data.clear()
+                            st.rerun()
+                
+                with c_colab2:
+                    st.markdown("##### 🗑️ Remoção")
+                    if lista_colabs:
+                        del_colab = st.selectbox("Selecione para Remover:", lista_colabs)
+                        if st.button("🗑️ Remover Colaborador"):
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("DELETE FROM colaboradores WHERE nome = %s", (del_colab,))
+                            st.success(f"{del_colab} removido!")
+                            st.cache_data.clear()
+                            st.rerun()
+
+            with tabs_admin[3]:
+                c_del1, c_del2 = st.columns(2)
+                
+                with c_del1:
+                    st.subheader("🗑️ Excluir Item/Linha Específica")
+                    cod_excluir = st.text_input("Código do Almoxarifado para apagar:")
+                    if cod_excluir and aprovar_acao_master("del_item", f"Excluir código {cod_excluir}"):
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute('DELETE FROM estoque WHERE "Codigo"=%s', (cod_excluir,))
+                        st.success("Código apagado!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    
+                    st.markdown("---")
+                    num_del = st.text_input("Número de Telefone a excluir:")
+                    if num_del:
+                        num_del_fmt = formatar_numero(num_del)
+                        if num_del_fmt and aprovar_acao_master("del_tel", f"Excluir linha {num_del_fmt}"):
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute('DELETE FROM telefonia WHERE "Numero"=%s', (num_del_fmt,))
+                            st.success("Linha excluída!")
+                            st.cache_data.clear()
+                            st.rerun()
+
+                with c_del2:
+                    st.subheader("⚠️ Limpeza em Massa")
+                    opcao_est = st.radio("Estoque:", ["Zerar quantidades", "Apagar todos os registros"])
+                    if st.button("Executar Limpeza Estoque") and aprovar_acao_master("limp_est", f"Limpar {opcao_est}"):
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                if "Zerar" in opcao_est:
+                                    cur.execute('UPDATE estoque SET "Quantidade" = 0')
+                                else:
+                                    cur.execute("DELETE FROM estoque")
+                        st.success("Estoque limpo!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    
+                    st.markdown("---")
+                    opcao_tel = st.radio("Telefonia:", ["Inativar todas", "Apagar todos os registros"])
+                    if st.button("Executar Limpeza Telefonia") and aprovar_acao_master("limp_tel", f"Limpar {opcao_tel}"):
+                        with get_conn() as conn:
+                            with conn.cursor() as cur:
+                                if "Inativar" in opcao_tel:
+                                    cur.execute("UPDATE telefonia SET \"Status\" = 'Inativo'")
+                                else:
+                                    cur.execute("DELETE FROM telefonia")
+                        st.success("Telefonia limpa!")
+                        st.cache_data.clear()
+                        st.rerun()
