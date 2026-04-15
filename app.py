@@ -923,7 +923,17 @@ else:
                 
                 acao_usr = st.radio("Ação:", ["➕ Criar Novo", "✏️ Editar Existente", "🗑️ Excluir"], horizontal=True)
                 
-                if acao_usr == "➕ Criar Novo":
+if acao_usr == "➕ Criar Novo":
+                    # Botão de emergência caso a sequência de IDs do Postgres tenha se perdido
+                    if st.button("🛠️ Corrigir Sequência de IDs do Banco"):
+                        try:
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("SELECT setval('usuarios_id_seq', COALESCE((SELECT MAX(id)+1 FROM usuarios), 1), false);")
+                            st.success("✅ Sequência de IDs corrigida! Tente criar o usuário novamente.")
+                        except Exception as e:
+                            st.error(f"Erro ao corrigir sequência: {e}")
+                            
                     with st.form("form_usr"):
                         uc1, uc2 = st.columns(2)
                         n_email, n_senha = uc1.text_input("E-mail:"), uc2.text_input("Senha Inicial:", type="password")
@@ -939,8 +949,16 @@ else:
                                                     (n_email.lower().strip(), n_senha, n_email.split('@')[0].capitalize(), n_nivel, "Todos" if "Todos" in n_cc else "|".join(n_cc)))
                                 st.success("✅ Usuário criado!")
                                 st.rerun()
-                            except psycopg2.IntegrityError:
-                                st.error("⛔ Email já cadastrado.")
+                            except psycopg2.IntegrityError as e:
+                                erro_real = str(e)
+                                if "usuarios_email_key" in erro_real or "usuarios_email_unique" in erro_real:
+                                    st.error("⛔ Este e-mail já existe de fato no banco de dados.")
+                                elif "usuarios_pkey" in erro_real:
+                                    st.error("⛔ Erro estrutural: Choque de ID. Clique no botão 'Corrigir Sequência de IDs do Banco' acima e tente novamente.")
+                                elif "usuarios_nivel_check" in erro_real:
+                                    st.error("⛔ O nível de acesso selecionado não é aceito pelo banco.")
+                                else:
+                                    st.error(f"⛔ Erro de Integridade Desconhecido:\n{erro_real}")
                             except Exception as e:
                                 st.error(f"⛔ Erro inesperado: {e}")
                 
