@@ -140,8 +140,7 @@ def init_db():
                     cc_permitido TEXT DEFAULT 'Todos'
                 )
             ''')
-            # ── TABELA DE MOVIMENTAÇÕES COM SUPORTE A MÚLTIPLOS ITENS ──────────
-            # movimentacoes: cabeçalho da solicitação (sem codigo_item / quantidade)
+            
             c.execute('''
                 CREATE TABLE IF NOT EXISTS movimentacoes (
                     id SERIAL PRIMARY KEY,
@@ -149,17 +148,15 @@ def init_db():
                     cc_destino TEXT NOT NULL,
                     solicitante_email TEXT NOT NULL,
                     retirante_nome TEXT NOT NULL,
-                    -- legado: mantidos para compatibilidade com registros antigos --
                     codigo_item TEXT,
                     quantidade INTEGER,
-                    -- fim legado --
                     status TEXT DEFAULT 'Pendente' CHECK (status IN ('Pendente', 'Aprovado', 'Rejeitado')),
                     data_solicitacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     data_aprovacao TIMESTAMP,
                     aprovador_email TEXT
                 )
             ''')
-            # ── TABELA DE ITENS DA MOVIMENTAÇÃO (relação 1:N) ──────────────────
+            
             c.execute('''
                 CREATE TABLE IF NOT EXISTS movimentacoes_itens (
                     id SERIAL PRIMARY KEY,
@@ -169,7 +166,7 @@ def init_db():
                     descricao TEXT
                 )
             ''')
-            # ── TABELA DE NOTIFICAÇÕES AO SOLICITANTE ──────────────────────────
+            
             c.execute('''
                 CREATE TABLE IF NOT EXISTS notificacoes (
                     id SERIAL PRIMARY KEY,
@@ -187,6 +184,15 @@ def init_db():
                     INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) 
                     VALUES (%s, %s, %s, %s, %s)
                 ''', ('master@brastelnet.com.br', SENHA_ZERAR_ESTOQUE, 'Administrador', 'Master', 'Todos'))
+
+    # Correção do esquema legado (evita o erro NotNullViolation)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as c:
+                c.execute('ALTER TABLE movimentacoes ALTER COLUMN codigo_item DROP NOT NULL;')
+                c.execute('ALTER TABLE movimentacoes ALTER COLUMN quantidade DROP NOT NULL;')
+    except Exception:
+        pass 
 
 init_db()
 
@@ -238,7 +244,6 @@ def logo_para_base64(path):
 
 # ── notificações ─────────────────────────────────────────────────────────────
 def criar_notificacao(destinatario_email: str, movimentacao_id: int, mensagem: str):
-    """Persiste uma notificação no banco para o solicitante."""
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
@@ -247,7 +252,7 @@ def criar_notificacao(destinatario_email: str, movimentacao_id: int, mensagem: s
                     (destinatario_email, movimentacao_id, mensagem)
                 )
     except Exception:
-        pass  # não bloqueia o fluxo principal
+        pass 
 
 def contar_notificacoes_nao_lidas(email: str) -> int:
     with get_conn() as conn:
@@ -262,7 +267,6 @@ def marcar_notificacoes_lidas(email: str):
 
 # ── carga dos itens de uma movimentação ──────────────────────────────────────
 def carregar_itens_movimentacao(mov_id: int):
-    """Retorna lista de itens de uma movimentação (tabela nova) + fallback legado."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -270,7 +274,6 @@ def carregar_itens_movimentacao(mov_id: int):
                 (mov_id,)
             )
             itens = cur.fetchall()
-            # fallback: movimentação antiga sem itens na tabela nova
             if not itens:
                 cur.execute(
                     'SELECT codigo_item, quantidade FROM movimentacoes WHERE id=%s AND codigo_item IS NOT NULL',
@@ -441,9 +444,7 @@ def gerar_template_depara():
         df.to_excel(writer, index=False)
     return buf.getvalue()
 
-# ── NOVO: template para carga em massa com colaborador ────────────────────────
 def gerar_template_carga_massa():
-    """Template Excel para carga de movimentações em massa com colaborador."""
     df = pd.DataFrame({
         'Tipo': ['RDM', 'CGM'],
         'CC': ['01/0001', '01/0002'],
@@ -461,10 +462,6 @@ def gerar_template_carga_massa():
 # ══════════════════════════════════════════════════════════════════════════════
 if 'sessao_id' not in st.session_state:
     st.session_state.sessao_id = str(uuid.uuid4())
-
-# Inicializa estado dos itens da requisição na sessão
-if 'itens_req' not in st.session_state:
-    st.session_state.itens_req = []  # lista de dicts {codigo, descricao, quantidade}
 
 with get_conn() as conn:
     with conn.cursor() as c:
@@ -638,9 +635,8 @@ else:
                     marcar_notificacoes_lidas(user['email'])
                     st.rerun()
 
-        # ── Montagem dos módulos disponíveis por nível ────────────────────────
         modulos_disp = ["🛒 Requisições (RDM/CGM)", "👁️ Carga por Colaborador", "👤 Meu Perfil"]
-        # Leitor já tem acesso às duas primeiras abas acima
+        
         if user['nivel'] in ['Almoxarife', 'Master']:
             modulos_disp.extend(["📦 Gestão de Estoque", "📱 Telefonia", "📋 Carga em Massa"])
         if user['nivel'] == 'Master':
@@ -681,7 +677,7 @@ else:
                         st.success("✅ Senha atualizada com sucesso!")
 
         # ─────────────────────────────────────────────────────────────────────
-        # MÓDULO: CARGA POR COLABORADOR (acessível a Leitor também)
+        # MÓDULO: CARGA POR COLABORADOR
         # ─────────────────────────────────────────────────────────────────────
         elif modulo_ativo == "👁️ Carga por Colaborador":
             st.subheader("🎒 Rastreabilidade de Materiais em Posse")
@@ -707,7 +703,7 @@ else:
                         """, (colab_alvo,))
                         carga = cur.fetchall()
 
-                        # Fallback legado para movimentações antigas (sem itens na tabela nova)
+                        # Fallback legado para movimentações antigas
                         cur.execute("""
                             SELECT
                                 m.codigo_item  AS "Código",
@@ -737,7 +733,6 @@ else:
                 st.markdown("#### Histórico de Movimentações")
                 with get_conn() as conn:
                     with conn.cursor() as cur:
-                        # Histórico com múltiplos itens
                         cur.execute('''
                             SELECT m.id, m.tipo AS "Operação", mi.codigo_item AS "Código",
                                    mi.quantidade AS "Qtd", m.data_aprovacao AS "Data Aprovação"
@@ -759,7 +754,7 @@ else:
                     st.dataframe(df_h, hide_index=True)
 
         # ─────────────────────────────────────────────────────────────────────
-        # MÓDULO 1: REQUISIÇÕES (RDM/CGM) — COM MÚLTIPLOS ITENS
+        # MÓDULO 1: REQUISIÇÕES (RDM/CGM) — NOVA INTERFACE DE TABELA (DATA EDITOR)
         # ─────────────────────────────────────────────────────────────────────
         elif modulo_ativo == "🛒 Requisições (RDM/CGM)":
             abas_req = ["Nova Solicitação"]
@@ -767,14 +762,12 @@ else:
                 abas_req.append("✅ Aprovações Pendentes")
             tabs_req = st.tabs(abas_req)
 
-            # ── ABA: Nova Solicitação ─────────────────────────────────────────
             with tabs_req[0]:
                 st.subheader("Formulário de Requisição/Devolução")
 
                 if not lista_colabs:
                     st.warning("⚠️ Peça ao Master para cadastrar a lista de Colaboradores antes de fazer solicitações.")
                 else:
-                    # Cabeçalho da solicitação
                     col_t1, col_t2 = st.columns(2)
                     tipo_req  = col_t1.radio("Tipo:", ["RDM (Retirar Material)", "CGM (Devolver Material)"], horizontal=True)
                     tipo_db   = "RDM" if "RDM" in tipo_req else "CGM"
@@ -782,91 +775,91 @@ else:
                     retirante = st.selectbox("Colaborador Responsável (Que irá receber/devolver):", lista_colabs)
 
                     st.markdown("---")
-                    st.markdown(f"#### ➕ Adicionar Itens *(máx. {MAX_ITENS_REQUISICAO})*")
+                    st.markdown(f"#### 📦 Itens da Solicitação *(máx. {MAX_ITENS_REQUISICAO})*")
+                    st.info("💡 **Dica de Ouro:** Você pode digitar direto na tabela ou **copiar uma lista de Códigos e Quantidades do Excel e colar nela** (CTRL+C / CTRL+V). Para adicionar mais linhas vazias, clique no ícone de `+` no rodapé da tabela.")
 
-                    # Formulário para adicionar item à lista
-                    with st.form("form_add_item", clear_on_submit=True):
-                        col_i1, col_i2, col_i3 = st.columns([3, 2, 1])
-                        cod_item = col_i1.text_input("Código do Item:")
-                        qtd_item = col_i2.number_input("Quantidade:", min_value=1, step=1, value=1)
-                        add_clicked = col_i3.form_submit_button("➕ Add", use_container_width=True)
+                    # Inicializa uma tabela em branco na sessão
+                    if 'grid_itens' not in st.session_state:
+                        # Começa com 5 linhas vazias para facilitar a digitação
+                        st.session_state.grid_itens = pd.DataFrame([{"Código": "", "Quantidade": 1} for _ in range(5)])
 
-                        if add_clicked:
-                            if not cod_item.strip():
-                                st.error("Informe o código do item.")
-                            elif len(st.session_state.itens_req) >= MAX_ITENS_REQUISICAO:
-                                st.error(f"Limite de {MAX_ITENS_REQUISICAO} itens atingido.")
-                            else:
-                                desc_item = buscar_descricao_por_codigo(cod_item.strip())
-                                if not desc_item:
-                                    st.error(f"⛔ Código '{cod_item}' não encontrado no almoxarifado.")
-                                else:
-                                    # Verifica se código já está na lista — soma as quantidades
-                                    existente = next((x for x in st.session_state.itens_req if x['codigo'] == cod_item.strip()), None)
-                                    if existente:
-                                        existente['quantidade'] += qtd_item
-                                        st.info(f"Quantidade de {cod_item} atualizada para {existente['quantidade']}.")
-                                    else:
-                                        st.session_state.itens_req.append({
-                                            'codigo': cod_item.strip(),
-                                            'descricao': desc_item,
-                                            'quantidade': int(qtd_item)
-                                        })
-                                    st.rerun()
+                    edited_df = st.data_editor(
+                        st.session_state.grid_itens,
+                        num_rows="dynamic", # Permite adicionar/remover linhas
+                        use_container_width=True,
+                        column_config={
+                            "Código": st.column_config.TextColumn("Código do Item 🔍", required=True),
+                            "Quantidade": st.column_config.NumberColumn("Quantidade 🔢", min_value=1, step=1, required=True, default=1)
+                        },
+                        key="editor_itens_req"
+                    )
 
-                    # Exibe lista corrente de itens
-                    if st.session_state.itens_req:
-                        st.markdown(f"**Itens na solicitação ({len(st.session_state.itens_req)}/{MAX_ITENS_REQUISICAO}):**")
-                        df_itens_view = pd.DataFrame(st.session_state.itens_req)
-                        df_itens_view.columns = ['Código', 'Descrição', 'Quantidade']
-                        st.dataframe(df_itens_view, use_container_width=True, hide_index=True)
+                    st.markdown("---")
+                    
+                    col_b1, col_b2 = st.columns([1, 4])
+                    if col_b1.button("🧹 Limpar Tabela"):
+                        st.session_state.grid_itens = pd.DataFrame([{"Código": "", "Quantidade": 1} for _ in range(5)])
+                        st.rerun()
 
-                        col_rem, col_limpar = st.columns([3, 1])
-                        cod_remover = col_rem.selectbox("Remover item:", ["—"] + [x['codigo'] for x in st.session_state.itens_req])
-                        if col_rem.button("🗑️ Remover"):
-                            if cod_remover != "—":
-                                st.session_state.itens_req = [x for x in st.session_state.itens_req if x['codigo'] != cod_remover]
-                                st.rerun()
-                        if col_limpar.button("🧹 Limpar Tudo"):
-                            st.session_state.itens_req = []
-                            st.rerun()
+                    if col_b2.button("🚀 Processar e Enviar Solicitação", type="primary", use_container_width=True):
+                        # Limpa os espaços e tira linhas em branco
+                        df_validos = edited_df.copy()
+                        df_validos['Código'] = df_validos['Código'].astype(str).str.strip()
+                        df_validos = df_validos[df_validos['Código'] != ""]
+                        df_validos = df_validos[df_validos['Código'] != "nan"]
 
-                        st.markdown("---")
-                        if st.button("🚀 Enviar Solicitação", type="primary"):
+                        if df_validos.empty:
+                            st.error("⛔ Adicione pelo menos um item válido na tabela antes de enviar.")
+                        elif len(df_validos) > MAX_ITENS_REQUISICAO:
+                            st.error(f"⛔ O limite é de {MAX_ITENS_REQUISICAO} itens por requisição. Você tentou enviar {len(df_validos)}.")
+                        else:
                             erros = []
-                            if tipo_db == "RDM":
-                                for item in st.session_state.itens_req:
-                                    df_disp = df[(df['Codigo'] == item['codigo']) & (df['CC'] == cc_req)]
-                                    saldo = df_disp['Quantidade'].sum() if not df_disp.empty else 0
-                                    if saldo < item['quantidade']:
-                                        erros.append(f"⛔ **{item['codigo']}** — saldo insuficiente no CC {cc_req}: {saldo} unid. (pedido: {item['quantidade']})")
+                            itens_processados = []
+                            
+                            # Agrupa caso o usuário coloque o mesmo código em linhas diferentes
+                            df_agrupado = df_validos.groupby("Código", as_index=False).sum()
 
+                            for _, row in df_agrupado.iterrows():
+                                cod = str(row["Código"])
+                                qtd = int(row["Quantidade"])
+                                
+                                desc = buscar_descricao_por_codigo(cod)
+                                if not desc:
+                                    erros.append(f"❌ O código **{cod}** não existe no almoxarifado.")
+                                    continue
+                                    
+                                if tipo_db == "RDM":
+                                    df_disp = df[(df['Codigo'] == cod) & (df['CC'] == cc_req)]
+                                    saldo = df_disp['Quantidade'].sum() if not df_disp.empty else 0
+                                    if saldo < qtd:
+                                        erros.append(f"❌ **{cod}**: Saldo insuficiente no CC '{cc_req}'. Estoque atual: {saldo} unid. (Pedido: {qtd})")
+                                        
+                                if not erros:
+                                    itens_processados.append({'codigo': cod, 'quantidade': qtd, 'descricao': desc})
+                                    
                             if erros:
+                                st.error("⛔ Não foi possível enviar. Corrija os problemas abaixo na tabela:")
                                 for e in erros:
-                                    st.error(e)
+                                    st.write(e)
                             else:
                                 with get_conn() as conn:
                                     with conn.cursor() as cur:
                                         cur.execute('''
-                                            INSERT INTO movimentacoes
-                                                (tipo, cc_destino, solicitante_email, retirante_nome)
-                                            VALUES (%s, %s, %s, %s)
-                                            RETURNING id
+                                            INSERT INTO movimentacoes (tipo, cc_destino, solicitante_email, retirante_nome)
+                                            VALUES (%s, %s, %s, %s) RETURNING id
                                         ''', (tipo_db, cc_req, user['email'], retirante))
                                         novo_id = cur.fetchone()['id']
-
-                                        for item in st.session_state.itens_req:
+                                        
+                                        for item in itens_processados:
                                             cur.execute('''
-                                                INSERT INTO movimentacoes_itens
-                                                    (movimentacao_id, codigo_item, quantidade, descricao)
+                                                INSERT INTO movimentacoes_itens (movimentacao_id, codigo_item, quantidade, descricao)
                                                 VALUES (%s, %s, %s, %s)
                                             ''', (novo_id, item['codigo'], item['quantidade'], item['descricao']))
-
-                                st.session_state.itens_req = []
-                                st.success(f"✅ Solicitação #{novo_id} enviada com {len(st.session_state.itens_req) if st.session_state.itens_req else 'os'} itens!")
+                                            
+                                st.success(f"✅ Solicitação #{novo_id} enviada com {len(itens_processados)} item(ns)!")
+                                # Zera a tabela para a próxima
+                                st.session_state.grid_itens = pd.DataFrame([{"Código": "", "Quantidade": 1} for _ in range(5)])
                                 st.rerun()
-                    else:
-                        st.info("Adicione pelo menos um item à solicitação.")
 
             # ── ABA: Aprovações Pendentes ─────────────────────────────────────
             if len(abas_req) > 1:
@@ -889,7 +882,6 @@ else:
                                 f"[{req['tipo']}] #{req['id']} | {len(itens_req)} item(s) | Resp: {req['retirante_nome']} | CC: {req['cc_destino']}",
                                 expanded=False
                             ):
-                                # ── Detalhes completos da solicitação ────────
                                 dt_sol = ajustar_fuso_br(req['data_solicitacao'])
                                 st.markdown(f"""
                                 <div class="req-detalhe-box">
@@ -901,7 +893,6 @@ else:
                                 </div>
                                 """, unsafe_allow_html=True)
 
-                                # Tabela de itens
                                 if itens_req:
                                     df_itens_aprov = pd.DataFrame(itens_req)
                                     df_itens_aprov = df_itens_aprov.rename(columns={
@@ -909,7 +900,6 @@ else:
                                         'quantidade': 'Quantidade',
                                         'descricao': 'Descrição'
                                     })
-                                    # Verifica saldo em tempo real (apenas RDM)
                                     if req['tipo'] == 'RDM':
                                         saldos = []
                                         for _, row_i in df_itens_aprov.iterrows():
@@ -944,7 +934,7 @@ else:
                                                             'UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s',
                                                             (qtd_i, cod_i, req['cc_destino'])
                                                         )
-                                                    else:  # CGM
+                                                    else:  
                                                         cur.execute(
                                                             'SELECT id FROM estoque WHERE "Codigo"=%s AND "CC"=%s',
                                                             (cod_i, req['cc_destino'])
@@ -971,7 +961,6 @@ else:
                                                     (user['email'], req['id'])
                                                 )
 
-                                        # Notifica o solicitante
                                         tipo_texto = "Retirada de Material (RDM)" if req['tipo'] == 'RDM' else "Devolução de Material (CGM)"
                                         msg_notif = (
                                             f"Sua solicitação #{req['id']} ({tipo_texto}) foi **APROVADA** por {user['nome']}. "
@@ -992,7 +981,6 @@ else:
                                                 "UPDATE movimentacoes SET status='Rejeitado', aprovador_email=%s WHERE id=%s",
                                                 (user['email'], req['id'])
                                             )
-                                    # Notifica rejeição
                                     tipo_texto = "RDM" if req['tipo'] == 'RDM' else "CGM"
                                     msg_rej = (
                                         f"Sua solicitação #{req['id']} ({tipo_texto}) foi **REJEITADA** por {user['nome']}. "
@@ -1024,7 +1012,7 @@ else:
                             )
 
         # ─────────────────────────────────────────────────────────────────────
-        # MÓDULO: CARGA EM MASSA (substitui "Carga por Colaborador" no menu interno)
+        # MÓDULO: CARGA EM MASSA 
         # ─────────────────────────────────────────────────────────────────────
         elif modulo_ativo == "📋 Carga em Massa":
             st.subheader("📤 Carga em Massa de Movimentações (com Colaborador)")
@@ -1073,7 +1061,6 @@ else:
                         st.dataframe(df_massa, use_container_width=True, hide_index=True)
 
                         if st.button("🚀 Importar Carga em Massa", type="primary"):
-                            # Agrupa por (Tipo, CC, Colaborador) → cria uma movimentação por grupo
                             grupos = df_massa.groupby(['Tipo', 'CC', 'Colaborador'])
                             total_movs = 0
                             with get_conn() as conn:
@@ -1096,7 +1083,6 @@ else:
                                                 VALUES (%s, %s, %s, %s)
                                             ''', (mov_id, item_row['Codigo_Item'], item_row['Quantidade'], desc_i))
 
-                                            # Atualiza estoque
                                             if tipo_g == 'RDM':
                                                 cur.execute(
                                                     'UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s',
