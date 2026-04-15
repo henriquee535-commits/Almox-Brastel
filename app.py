@@ -13,6 +13,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 import random
 import re
+import os
 from fpdf import FPDF
 
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -163,6 +164,12 @@ def logout():
     st.session_state.usuario_logado = None
     st.rerun()
 
+# Ajuste global de fuso horário (-3 horas para o Brasil)
+def ajustar_fuso_br(dt_obj):
+    if dt_obj:
+        return dt_obj - timedelta(hours=3)
+    return None
+
 # ── pdf ───────────────────────────────────────────────────────────────────────
 def gerar_pdf_comprovante(req_id):
     with get_conn() as conn:
@@ -175,18 +182,32 @@ def gerar_pdf_comprovante(req_id):
             desc = cur.fetchone()
             descricao = desc['Descricao'] if desc else "Descrição não encontrada"
 
+    # Aplicando a correção de fuso horário no PDF
+    dt_sol = ajustar_fuso_br(req['data_solicitacao'])
+    dt_apr = ajustar_fuso_br(req['data_aprovacao'])
+
     pdf = FPDF()
     pdf.add_page()
+    
+    # Tentativa de carregar a Logo1 no PDF
+    for ext in ['png', 'jpg', 'jpeg']:
+        if os.path.exists(f"logo1.{ext}"):
+            try:
+                pdf.image(f"logo1.{ext}", x=10, y=8, w=40)
+                break
+            except Exception:
+                pass
+                
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, txt="BRASTEL - CONTROLE DE ALMOXARIFADO", ln=True, align='C')
+    pdf.cell(0, 10, txt="BRASTEL - CONTROLE DE ALMOXARIFADO", ln=True, align='C')
     pdf.set_font("Arial", 'B', 12)
     titulo = "REQUISIÇÃO DE MATERIAL (RDM)" if req['tipo'] == 'RDM' else "ENTREGA DE MATERIAL (CGM)"
-    pdf.cell(200, 10, txt=f"TERMO DE {titulo} - #{req['id']}", ln=True, align='C')
+    pdf.cell(0, 10, txt=f"TERMO DE {titulo} - #{req['id']}", ln=True, align='C')
     pdf.ln(10)
     
     pdf.set_font("Arial", '', 12)
-    pdf.cell(200, 8, txt=f"Data da Solicitação: {req['data_solicitacao'].strftime('%d/%m/%Y %H:%M')}", ln=True)
-    pdf.cell(200, 8, txt=f"Data da Aprovação: {req['data_aprovacao'].strftime('%d/%m/%Y %H:%M') if req['data_aprovacao'] else 'N/A'}", ln=True)
+    pdf.cell(200, 8, txt=f"Data da Solicitação: {dt_sol.strftime('%d/%m/%Y %H:%M')}", ln=True)
+    pdf.cell(200, 8, txt=f"Data da Aprovação: {dt_apr.strftime('%d/%m/%Y %H:%M') if dt_apr else 'N/A'}", ln=True)
     pdf.cell(200, 8, txt=f"Centro de Custo: {req['cc_destino']}", ln=True)
     pdf.cell(200, 8, txt=f"Solicitante (Sistema): {req['solicitante_email']}", ln=True)
     pdf.cell(200, 8, txt=f"Autorizado/Designado para Retirada: {req['retirante_nome']}", ln=True)
@@ -624,7 +645,9 @@ else:
                         for req in pendentes:
                             with st.expander(f"[{req['tipo']}] Item: {req['codigo_item']} | Qtd: {req['quantidade']} | Req: {req['solicitante_email']}"):
                                 st.write(f"**CC:** {req['cc_destino']} | **Retirante:** {req['retirante_nome']}")
-                                st.write(f"**Data da Solicitação:** {req['data_solicitacao'].strftime('%d/%m/%Y %H:%M')}")
+                                # Aplicando fuso do brasil para exibição na UI
+                                dt_sol_ui = ajustar_fuso_br(req['data_solicitacao'])
+                                st.write(f"**Data da Solicitação:** {dt_sol_ui.strftime('%d/%m/%Y %H:%M')}")
                                 
                                 c_btn1, c_btn2, _ = st.columns([1, 1, 3])
                                 if c_btn1.button("✅ Aprovar e Liberar", key=f"apr_{req['id']}"):
@@ -641,7 +664,16 @@ else:
                                                         st.stop()
                                                     cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
                                                 else:
-                                                    cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
+                                                    # Lógica CGM corrigida (Insere se não existir no CC)
+                                                    cur.execute('SELECT id FROM estoque WHERE "Codigo"=%s AND "CC"=%s', (req['codigo_item'], req['cc_destino']))
+                                                    if cur.fetchone():
+                                                        cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
+                                                    else:
+                                                        # Busca descrição em qualquer outro CC para aproveitar
+                                                        cur.execute('SELECT "Descricao" FROM estoque WHERE "Codigo"=%s LIMIT 1', (req['codigo_item'],))
+                                                        desc_row = cur.fetchone()
+                                                        desc_item = desc_row['Descricao'] if desc_row else "Item Devolvido (Sem descrição prévia)"
+                                                        cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (req['codigo_item'], desc_item, req['quantidade'], req['cc_destino']))
                                                 
                                                 cur.execute('''
                                                     UPDATE movimentacoes 
@@ -671,7 +703,8 @@ else:
                     
                     for ap in aprovados:
                         col_txt, col_dl = st.columns([3, 1])
-                        col_txt.write(f"#{ap['id']} - {ap['tipo']} - Retirante: {ap['retirante_nome']} (Aprovado em {ap['data_aprovacao'].strftime('%d/%m %H:%M')})")
+                        dt_apr_ui = ajustar_fuso_br(ap['data_aprovacao'])
+                        col_txt.write(f"#{ap['id']} - {ap['tipo']} - Retirante: {ap['retirante_nome']} (Aprovado em {dt_apr_ui.strftime('%d/%m %H:%M')})")
                         pdf_bytes = gerar_pdf_comprovante(ap['id'])
                         if pdf_bytes:
                             col_dl.download_button(label="📄 Baixar PDF", data=pdf_bytes, file_name=f"Documento_{ap['tipo']}_{ap['id']}.pdf", mime="application/pdf", key=f"dl_pdf_{ap['id']}")
