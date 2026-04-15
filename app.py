@@ -27,6 +27,7 @@ SENHA_ZERAR_ESTOQUE = st.secrets.get("SENHA_ZERAR_ESTOQUE", "123")
 DATABASE_URL = st.secrets["DATABASE_URL"]
 LIMITE_PESSOAS = 40
 TEMPO_INATIVIDADE = 1
+MAX_ITENS_REQUISICAO = 20  # Máximo de itens por requisição
 
 CONTAS_TELEFONIA = ["ENGIA", "BRASTEL", "ATTRON"]
 OPERADORAS_TELEFONIA = ["Claro", "Vivo", "TIM", "Oi", "Algar", "Nextel", "Outra"]
@@ -45,6 +46,27 @@ html, body, [class*="css"] { font-family: 'Sora', sans-serif; }
 }
 .stButton > button:hover { opacity: 0.88; color: white; }
 .stAlert { border-radius: 10px; }
+.req-detalhe-box {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin: 8px 0;
+    font-size: 0.93rem;
+}
+.req-detalhe-box table { width: 100%; border-collapse: collapse; }
+.req-detalhe-box th { background: #e2e8f0; padding: 6px 10px; text-align: left; font-size: 0.82rem; }
+.req-detalhe-box td { padding: 5px 10px; border-bottom: 1px solid #eee; font-size: 0.85rem; }
+.notif-badge {
+    display: inline-block;
+    background: #e53e3e;
+    color: white;
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    margin-left: 6px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,7 +76,7 @@ def get_conn():
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     try:
         yield conn
-        conn.commit()  # ✅ COMMIT DENTRO DO CONTEXT MANAGER
+        conn.commit()
     except Exception as e:
         conn.rollback()
         raise e
@@ -118,6 +140,8 @@ def init_db():
                     cc_permitido TEXT DEFAULT 'Todos'
                 )
             ''')
+            # ── TABELA DE MOVIMENTAÇÕES COM SUPORTE A MÚLTIPLOS ITENS ──────────
+            # movimentacoes: cabeçalho da solicitação (sem codigo_item / quantidade)
             c.execute('''
                 CREATE TABLE IF NOT EXISTS movimentacoes (
                     id SERIAL PRIMARY KEY,
@@ -125,15 +149,38 @@ def init_db():
                     cc_destino TEXT NOT NULL,
                     solicitante_email TEXT NOT NULL,
                     retirante_nome TEXT NOT NULL,
-                    codigo_item TEXT NOT NULL,
-                    quantidade INTEGER NOT NULL,
+                    -- legado: mantidos para compatibilidade com registros antigos --
+                    codigo_item TEXT,
+                    quantidade INTEGER,
+                    -- fim legado --
                     status TEXT DEFAULT 'Pendente' CHECK (status IN ('Pendente', 'Aprovado', 'Rejeitado')),
                     data_solicitacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     data_aprovacao TIMESTAMP,
                     aprovador_email TEXT
                 )
             ''')
-            
+            # ── TABELA DE ITENS DA MOVIMENTAÇÃO (relação 1:N) ──────────────────
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS movimentacoes_itens (
+                    id SERIAL PRIMARY KEY,
+                    movimentacao_id INTEGER REFERENCES movimentacoes(id) ON DELETE CASCADE,
+                    codigo_item TEXT NOT NULL,
+                    quantidade INTEGER NOT NULL,
+                    descricao TEXT
+                )
+            ''')
+            # ── TABELA DE NOTIFICAÇÕES AO SOLICITANTE ──────────────────────────
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS notificacoes (
+                    id SERIAL PRIMARY KEY,
+                    destinatario_email TEXT NOT NULL,
+                    movimentacao_id INTEGER REFERENCES movimentacoes(id) ON DELETE CASCADE,
+                    mensagem TEXT NOT NULL,
+                    lida BOOLEAN DEFAULT FALSE,
+                    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             c.execute("SELECT count(*) as total FROM usuarios")
             if c.fetchone()['total'] == 0:
                 c.execute('''
@@ -143,7 +190,7 @@ def init_db():
 
 init_db()
 
-# ── helpers de validação e data ─────────────────────────────────────────────
+# ── helpers ──────────────────────────────────────────────────────────────────
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
 
@@ -189,7 +236,52 @@ def logo_para_base64(path):
             continue
     return None
 
-# ── gerador html levinho ───────────────────────────────────────────────────
+# ── notificações ─────────────────────────────────────────────────────────────
+def criar_notificacao(destinatario_email: str, movimentacao_id: int, mensagem: str):
+    """Persiste uma notificação no banco para o solicitante."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO notificacoes (destinatario_email, movimentacao_id, mensagem) VALUES (%s, %s, %s)",
+                    (destinatario_email, movimentacao_id, mensagem)
+                )
+    except Exception:
+        pass  # não bloqueia o fluxo principal
+
+def contar_notificacoes_nao_lidas(email: str) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) as total FROM notificacoes WHERE destinatario_email=%s AND lida=FALSE", (email,))
+            return cur.fetchone()['total']
+
+def marcar_notificacoes_lidas(email: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE notificacoes SET lida=TRUE WHERE destinatario_email=%s", (email,))
+
+# ── carga dos itens de uma movimentação ──────────────────────────────────────
+def carregar_itens_movimentacao(mov_id: int):
+    """Retorna lista de itens de uma movimentação (tabela nova) + fallback legado."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT codigo_item, quantidade, descricao FROM movimentacoes_itens WHERE movimentacao_id=%s ORDER BY id",
+                (mov_id,)
+            )
+            itens = cur.fetchall()
+            # fallback: movimentação antiga sem itens na tabela nova
+            if not itens:
+                cur.execute(
+                    'SELECT codigo_item, quantidade FROM movimentacoes WHERE id=%s AND codigo_item IS NOT NULL',
+                    (mov_id,)
+                )
+                row = cur.fetchone()
+                if row and row['codigo_item']:
+                    itens = [{'codigo_item': row['codigo_item'], 'quantidade': row['quantidade'], 'descricao': None}]
+    return itens
+
+# ── gerador html comprovante ──────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, max_entries=20, ttl=120)
 def gerar_html_comprovante(req_id):
     with get_conn() as conn:
@@ -198,17 +290,21 @@ def gerar_html_comprovante(req_id):
             req = cur.fetchone()
             if not req:
                 return None
-            
-            cur.execute('SELECT "Descricao" FROM estoque WHERE "Codigo" = %s LIMIT 1', (req['codigo_item'],))
-            desc = cur.fetchone()
-            descricao = desc['Descricao'] if desc else "Descrição não encontrada"
 
+    itens = carregar_itens_movimentacao(req_id)
     dt_sol = ajustar_fuso_br(req['data_solicitacao'])
     dt_apr = ajustar_fuso_br(req['data_aprovacao'])
     titulo = "REQUISIÇÃO DE MATERIAL (RDM)" if req['tipo'] == 'RDM' else "ENTREGA DE MATERIAL (CGM)"
-    
+
     logo_b64 = logo_para_base64("logo1.png") or logo_para_base64("logo1.jpg")
     img_tag = f'<img src="{logo_b64}" style="max-height: 80px; margin-bottom: 10px;">' if logo_b64 else '<h2>BRASTEL</h2>'
+
+    linhas_itens = ""
+    for i, item in enumerate(itens, 1):
+        desc = item.get('descricao') or item.get('Descricao') or ''
+        cod  = item.get('codigo_item') or item.get('Codigo') or ''
+        qtd  = item.get('quantidade') or item.get('Quantidade') or ''
+        linhas_itens += f"<tr><td>{i}</td><td>{cod}</td><td>{desc}</td><td style='text-align:center'>{qtd}</td></tr>"
 
     html_content = f"""
     <!DOCTYPE html>
@@ -217,11 +313,14 @@ def gerar_html_comprovante(req_id):
         <meta charset="UTF-8">
         <title>Comprovante #{req['id']} - Brastel</title>
         <style>
-            body {{ font-family: Arial, sans-serif; padding: 40px; color: #333; max-width: 800px; margin: auto; }}
+            body {{ font-family: Arial, sans-serif; padding: 40px; color: #333; max-width: 850px; margin: auto; }}
             .header {{ text-align: center; border-bottom: 2px solid #333; padding-bottom: 20px; margin-bottom: 30px; }}
             .title {{ font-size: 22px; font-weight: bold; margin-bottom: 5px; }}
             .subtitle {{ font-size: 18px; font-weight: bold; }}
-            .info-box {{ margin-bottom: 30px; line-height: 1.6; border: 1px solid #ddd; padding: 15px; border-radius: 8px; }}
+            .info-box {{ margin-bottom: 20px; line-height: 1.7; border: 1px solid #ddd; padding: 15px; border-radius: 8px; }}
+            table.itens {{ width:100%; border-collapse: collapse; margin-top: 8px; }}
+            table.itens th {{ background:#e9ecef; padding: 7px 10px; text-align:left; font-size:0.9rem; }}
+            table.itens td {{ padding: 6px 10px; border-bottom: 1px solid #dee2e6; font-size:0.88rem; }}
             .signatures {{ margin-top: 80px; display: flex; justify-content: space-between; text-align: center; }}
             .sig-line {{ width: 45%; border-top: 1px solid #333; padding-top: 10px; font-weight: bold; }}
             @media print {{ body {{ padding: 0; }} .no-print {{ display: none; }} }}
@@ -236,7 +335,7 @@ def gerar_html_comprovante(req_id):
             <div class="title">CONTROLE DE ALMOXARIFADO</div>
             <div class="subtitle">TERMO DE {titulo} - #{req['id']}</div>
         </div>
-        
+
         <div class="info-box">
             <strong>Data da Solicitação:</strong> {dt_sol.strftime('%d/%m/%Y %H:%M')}<br>
             <strong>Data da Aprovação:</strong> {dt_apr.strftime('%d/%m/%Y %H:%M') if dt_apr else 'N/A'}<br>
@@ -245,19 +344,20 @@ def gerar_html_comprovante(req_id):
             <strong>Autorizado/Designado para Retirada:</strong> {req['retirante_nome']}<br>
             <strong>Aprovado por:</strong> {req['aprovador_email']}
         </div>
-        
+
         <div class="info-box">
-            <h3 style="margin-top:0;">DETALHES DO ITEM:</h3>
-            <strong>Código:</strong> {req['codigo_item']}<br>
-            <strong>Descrição:</strong> {descricao}<br>
-            <strong>Quantidade:</strong> {req['quantidade']} unidades
+            <h3 style="margin-top:0;">ITENS DA SOLICITAÇÃO:</h3>
+            <table class="itens">
+                <tr><th>#</th><th>Código</th><th>Descrição</th><th style="text-align:center">Qtd</th></tr>
+                {linhas_itens}
+            </table>
         </div>
-        
-        <div class="info-box" style="margin-top: 40px; border: none; padding: 0;">
+
+        <div class="info-box" style="margin-top: 30px; border: none; padding: 0;">
             <h3 style="margin-bottom: 5px;">Ato de Entrega/Retirada:</h3>
             Data física: ____/____/20___ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Hora: ____:____
         </div>
-        
+
         <div class="signatures">
             <div class="sig-line">Assinatura do Almoxarife</div>
             <div class="sig-line">Assinatura de {req['retirante_nome']}</div>
@@ -267,7 +367,7 @@ def gerar_html_comprovante(req_id):
     """
     return html_content
 
-# ── caches otimizados ────────────────────────────────────────────────────────
+# ── caches ────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=120, max_entries=2)
 def carregar_estoque():
     with get_conn() as conn:
@@ -319,7 +419,7 @@ def buscar_descricao_por_codigo(cod):
             result = c.fetchone()
     return result['Descricao'] if result else None
 
-# ── templates ─────────────────────────────────────────────────────────────
+# ── templates ─────────────────────────────────────────────────────────────────
 def gerar_template_xlsx():
     df = pd.DataFrame({'Codigo': ['ABC'], 'Descricao': ['Parafuso'], 'Quantidade': [100], 'CC': ['01/0001']})
     buf = io.BytesIO()
@@ -341,9 +441,30 @@ def gerar_template_depara():
         df.to_excel(writer, index=False)
     return buf.getvalue()
 
-# --- CONTROLE DE ACESSO ---
+# ── NOVO: template para carga em massa com colaborador ────────────────────────
+def gerar_template_carga_massa():
+    """Template Excel para carga de movimentações em massa com colaborador."""
+    df = pd.DataFrame({
+        'Tipo': ['RDM', 'CGM'],
+        'CC': ['01/0001', '01/0002'],
+        'Colaborador': ['JOÃO DA SILVA', 'MARIA SOUZA'],
+        'Codigo_Item': ['ABC123', 'DEF456'],
+        'Quantidade': [2, 1]
+    })
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return buf.getvalue()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONTROLE DE ACESSO / SESSÃO
+# ══════════════════════════════════════════════════════════════════════════════
 if 'sessao_id' not in st.session_state:
     st.session_state.sessao_id = str(uuid.uuid4())
+
+# Inicializa estado dos itens da requisição na sessão
+if 'itens_req' not in st.session_state:
+    st.session_state.itens_req = []  # lista de dicts {codigo, descricao, quantidade}
 
 with get_conn() as conn:
     with conn.cursor() as c:
@@ -368,21 +489,24 @@ menu = st.sidebar.radio("Ir para:", ["📊 Consulta", "📱 Telefonia", "🔒 Si
 st.sidebar.divider()
 
 if st.session_state.usuario_logado:
-    st.sidebar.success(f"👤 Olá, {st.session_state.usuario_logado['nome']}")
-    st.sidebar.caption(f"Nível: {st.session_state.usuario_logado['nivel']}")
+    user_logado = st.session_state.usuario_logado
+    qtd_notif = contar_notificacoes_nao_lidas(user_logado['email'])
+    notif_badge = f" 🔴 {qtd_notif}" if qtd_notif > 0 else ""
+    st.sidebar.success(f"👤 Olá, {user_logado['nome']}{notif_badge}")
+    st.sidebar.caption(f"Nível: {user_logado['nivel']}")
     if st.sidebar.button("Sair / Logout"):
         logout()
 st.sidebar.markdown(f"🟢 **{total_ativos}/{LIMITE_PESSOAS}** pessoas online")
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # TELAS PÚBLICAS
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 if menu == "📊 Consulta":
     src1, src2 = logo_para_base64("logo1.png"), logo_para_base64("logo2.png")
     img1 = f'<img class="img-logo1" src="{src1}">' if src1 else '<b>LOGO 1</b>'
     img2 = f'<img class="img-logo2" src="{src2}">' if src2 else '<b>LOGO 2</b>'
     df_ativos = df[df['Quantidade'] > 0]
-    
+
     components.html(f"""
     <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&display=swap" rel="stylesheet">
@@ -426,7 +550,7 @@ elif menu == "📱 Telefonia":
     src1, src2 = logo_para_base64("logo1.png"), logo_para_base64("logo2.png")
     img1 = f'<img class="img-logo1" src="{src1}">' if src1 else '<b>LOGO 1</b>'
     img2 = f'<img class="img-logo2" src="{src2}">' if src2 else '<b>LOGO 2</b>'
-    
+
     components.html(f"""
     <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&display=swap" rel="stylesheet">
@@ -473,9 +597,9 @@ elif menu == "📱 Telefonia":
     st.dataframe(df_tel_filt, use_container_width=True, hide_index=True)
 
 
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # TELA 3: SISTEMA INTERNO
-# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 else:
     if not st.session_state.usuario_logado:
         st.title("🔒 Acesso Restrito")
@@ -491,34 +615,55 @@ else:
     else:
         user = st.session_state.usuario_logado
         st.title("Sistema Interno — Brastel")
-        
+
         user_ccs_str = user['cc_permitido']
         cc_opcoes = lista_cc if user_ccs_str == 'Todos' else [c.strip() for c in user_ccs_str.split('|')]
 
-        modulos_disp = ["🛒 Requisições (RDM/CGM)", "👤 Meu Perfil"]
+        # ── Notificações do usuário ───────────────────────────────────────────
+        qtd_notif = contar_notificacoes_nao_lidas(user['email'])
+        if qtd_notif > 0:
+            with st.expander(f"🔔 Você tem **{qtd_notif}** notificação(ões) não lida(s) — clique para ver", expanded=False):
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT * FROM notificacoes WHERE destinatario_email=%s ORDER BY criado_em DESC LIMIT 20",
+                            (user['email'],)
+                        )
+                        notifs = cur.fetchall()
+                for n in notifs:
+                    icone = "🟢" if n['lida'] else "🔵"
+                    dt_n = ajustar_fuso_br(n['criado_em'])
+                    st.markdown(f"{icone} **{dt_n.strftime('%d/%m %H:%M')}** — {n['mensagem']}")
+                if st.button("✅ Marcar todas como lidas"):
+                    marcar_notificacoes_lidas(user['email'])
+                    st.rerun()
+
+        # ── Montagem dos módulos disponíveis por nível ────────────────────────
+        modulos_disp = ["🛒 Requisições (RDM/CGM)", "👁️ Carga por Colaborador", "👤 Meu Perfil"]
+        # Leitor já tem acesso às duas primeiras abas acima
         if user['nivel'] in ['Almoxarife', 'Master']:
-            modulos_disp.extend(["📦 Gestão de Estoque", "📱 Telefonia", "📋 Carga por Colaborador"])
+            modulos_disp.extend(["📦 Gestão de Estoque", "📱 Telefonia", "📋 Carga em Massa"])
         if user['nivel'] == 'Master':
             modulos_disp.append("⚙️ Administração")
 
         modulo_ativo = st.radio("Módulo:", modulos_disp, horizontal=True)
         st.divider()
 
-        # ---------------------------------------------------------
+        # ─────────────────────────────────────────────────────────────────────
         # MÓDULO: MEU PERFIL
-        # ---------------------------------------------------------
+        # ─────────────────────────────────────────────────────────────────────
         if modulo_ativo == "👤 Meu Perfil":
             st.subheader("Configurações da Conta")
             st.write(f"**Nome:** {user['nome']}")
             st.write(f"**E-mail:** {user['email']}")
             st.write(f"**Nível de Acesso:** {user['nivel']}")
-            
+
             with st.form("form_senha"):
                 st.write("🔒 **Alterar Senha**")
                 senha_atual = st.text_input("Senha Atual", type="password")
-                nova_senha = st.text_input("Nova Senha", type="password")
-                conf_senha = st.text_input("Confirmar Nova Senha", type="password")
-                
+                nova_senha  = st.text_input("Nova Senha", type="password")
+                conf_senha  = st.text_input("Confirmar Nova Senha", type="password")
+
                 if st.form_submit_button("Atualizar Senha"):
                     if not senha_atual or not nova_senha or not conf_senha:
                         st.error("Preencha todos os campos.")
@@ -535,101 +680,325 @@ else:
                         st.session_state.usuario_logado['senha'] = nova_senha
                         st.success("✅ Senha atualizada com sucesso!")
 
-        # ---------------------------------------------------------
-        # MÓDULO 1: REQUISIÇÕES
-        # ---------------------------------------------------------
+        # ─────────────────────────────────────────────────────────────────────
+        # MÓDULO: CARGA POR COLABORADOR (acessível a Leitor também)
+        # ─────────────────────────────────────────────────────────────────────
+        elif modulo_ativo == "👁️ Carga por Colaborador":
+            st.subheader("🎒 Rastreabilidade de Materiais em Posse")
+            st.info("Calcula automaticamente o saldo físico de materiais com cada colaborador.")
+
+            colab_alvo = st.selectbox("Selecione o Colaborador:", [""] + lista_colabs)
+
+            if colab_alvo:
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT
+                                mi.codigo_item  AS "Código",
+                                MAX(mi.descricao) AS "Descrição",
+                                SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE 0 END) -
+                                SUM(CASE WHEN m.tipo = 'CGM' THEN mi.quantidade ELSE 0 END) AS "Saldo em Mãos"
+                            FROM movimentacoes_itens mi
+                            JOIN movimentacoes m ON m.id = mi.movimentacao_id
+                            WHERE m.status = 'Aprovado' AND m.retirante_nome = %s
+                            GROUP BY mi.codigo_item
+                            HAVING (SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE 0 END) -
+                                    SUM(CASE WHEN m.tipo = 'CGM' THEN mi.quantidade ELSE 0 END)) > 0
+                        """, (colab_alvo,))
+                        carga = cur.fetchall()
+
+                        # Fallback legado para movimentações antigas (sem itens na tabela nova)
+                        cur.execute("""
+                            SELECT
+                                m.codigo_item  AS "Código",
+                                NULL           AS "Descrição",
+                                SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) -
+                                SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END) AS "Saldo em Mãos"
+                            FROM movimentacoes m
+                            WHERE m.status = 'Aprovado'
+                              AND m.retirante_nome = %s
+                              AND m.codigo_item IS NOT NULL
+                              AND m.id NOT IN (SELECT DISTINCT movimentacao_id FROM movimentacoes_itens)
+                            GROUP BY m.codigo_item
+                            HAVING (SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) -
+                                    SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END)) > 0
+                        """, (colab_alvo,))
+                        carga_legado = cur.fetchall()
+
+                carga_total = list(carga) + list(carga_legado)
+
+                if not carga_total:
+                    st.success(f"✅ O colaborador **{colab_alvo}** não possui materiais pendentes de devolução.")
+                else:
+                    st.warning(f"⚠️ Materiais atualmente alocados para **{colab_alvo}**:")
+                    st.dataframe(pd.DataFrame(carga_total), use_container_width=True, hide_index=True)
+
+                st.divider()
+                st.markdown("#### Histórico de Movimentações")
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        # Histórico com múltiplos itens
+                        cur.execute('''
+                            SELECT m.id, m.tipo AS "Operação", mi.codigo_item AS "Código",
+                                   mi.quantidade AS "Qtd", m.data_aprovacao AS "Data Aprovação"
+                            FROM movimentacoes m
+                            JOIN movimentacoes_itens mi ON mi.movimentacao_id = m.id
+                            WHERE m.status = 'Aprovado' AND m.retirante_nome = %s
+                            UNION ALL
+                            SELECT id, tipo, codigo_item, quantidade, data_aprovacao
+                            FROM movimentacoes
+                            WHERE status = 'Aprovado' AND retirante_nome = %s
+                              AND codigo_item IS NOT NULL
+                              AND id NOT IN (SELECT DISTINCT movimentacao_id FROM movimentacoes_itens)
+                            ORDER BY "Data Aprovação" DESC
+                        ''', (colab_alvo, colab_alvo))
+                        hist = cur.fetchall()
+                if hist:
+                    df_h = pd.DataFrame(hist)
+                    df_h['Data Aprovação'] = pd.to_datetime(df_h['Data Aprovação']).dt.tz_localize('UTC').dt.tz_convert('America/Sao_Paulo').dt.strftime('%d/%m/%Y %H:%M')
+                    st.dataframe(df_h, hide_index=True)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # MÓDULO 1: REQUISIÇÕES (RDM/CGM) — COM MÚLTIPLOS ITENS
+        # ─────────────────────────────────────────────────────────────────────
         elif modulo_ativo == "🛒 Requisições (RDM/CGM)":
             abas_req = ["Nova Solicitação"]
             if user['nivel'] in ['Almoxarife', 'Master']:
                 abas_req.append("✅ Aprovações Pendentes")
             tabs_req = st.tabs(abas_req)
-            
+
+            # ── ABA: Nova Solicitação ─────────────────────────────────────────
             with tabs_req[0]:
                 st.subheader("Formulário de Requisição/Devolução")
+
                 if not lista_colabs:
                     st.warning("⚠️ Peça ao Master para cadastrar a lista de Colaboradores antes de fazer solicitações.")
                 else:
-                    with st.form("form_solicitacao", clear_on_submit=True):
-                        tipo_req = st.radio("Tipo:", ["RDM (Retirar Material)", "CGM (Devolver Material)"], horizontal=True)
-                        tipo_db = "RDM" if "RDM" in tipo_req else "CGM"
-                        cc_req = st.selectbox("Centro de Custo:", cc_opcoes)
-                        
-                        col_s1, col_s2 = st.columns(2)
-                        cod_req = col_s1.text_input("Código do Item:")
-                        qtd_req = col_s2.number_input("Quantidade:", min_value=1, step=1)
-                        
-                        retirante = st.selectbox("Colaborador Responsável (Que irá receber/devolver):", lista_colabs)
-                        
-                        if st.form_submit_button("Enviar Solicitação"):
-                            if not cod_req:
-                                st.error("Preencha o código.")
-                            else:
-                                desc_valida = buscar_descricao_por_codigo(cod_req)
-                                if not desc_valida:
-                                    st.error(f"⛔ O código '{cod_req}' não está cadastrado no almoxarifado.")
-                                else:
-                                    pode_prosseguir = True
-                                    if tipo_db == "RDM":
-                                        df_disp = df[(df['Codigo'] == cod_req) & (df['CC'] == cc_req)]
-                                        saldo = df_disp['Quantidade'].sum() if not df_disp.empty else 0
-                                        if saldo < qtd_req:
-                                            st.error(f"⛔ Saldo insuficiente. Estoque atual no CC {cc_req}: {saldo} unid.")
-                                            pode_prosseguir = False
-                                    
-                                    if pode_prosseguir:
-                                        with get_conn() as conn:
-                                            with conn.cursor() as cur:
-                                                cur.execute('''
-                                                    INSERT INTO movimentacoes (tipo, cc_destino, solicitante_email, retirante_nome, codigo_item, quantidade)
-                                                    VALUES (%s, %s, %s, %s, %s, %s)
-                                                ''', (tipo_db, cc_req, user['email'], retirante, cod_req, qtd_req))
-                                        st.success("✅ Solicitação enviada!")
+                    # Cabeçalho da solicitação
+                    col_t1, col_t2 = st.columns(2)
+                    tipo_req  = col_t1.radio("Tipo:", ["RDM (Retirar Material)", "CGM (Devolver Material)"], horizontal=True)
+                    tipo_db   = "RDM" if "RDM" in tipo_req else "CGM"
+                    cc_req    = col_t2.selectbox("Centro de Custo:", cc_opcoes)
+                    retirante = st.selectbox("Colaborador Responsável (Que irá receber/devolver):", lista_colabs)
 
+                    st.markdown("---")
+                    st.markdown(f"#### ➕ Adicionar Itens *(máx. {MAX_ITENS_REQUISICAO})*")
+
+                    # Formulário para adicionar item à lista
+                    with st.form("form_add_item", clear_on_submit=True):
+                        col_i1, col_i2, col_i3 = st.columns([3, 2, 1])
+                        cod_item = col_i1.text_input("Código do Item:")
+                        qtd_item = col_i2.number_input("Quantidade:", min_value=1, step=1, value=1)
+                        add_clicked = col_i3.form_submit_button("➕ Add", use_container_width=True)
+
+                        if add_clicked:
+                            if not cod_item.strip():
+                                st.error("Informe o código do item.")
+                            elif len(st.session_state.itens_req) >= MAX_ITENS_REQUISICAO:
+                                st.error(f"Limite de {MAX_ITENS_REQUISICAO} itens atingido.")
+                            else:
+                                desc_item = buscar_descricao_por_codigo(cod_item.strip())
+                                if not desc_item:
+                                    st.error(f"⛔ Código '{cod_item}' não encontrado no almoxarifado.")
+                                else:
+                                    # Verifica se código já está na lista — soma as quantidades
+                                    existente = next((x for x in st.session_state.itens_req if x['codigo'] == cod_item.strip()), None)
+                                    if existente:
+                                        existente['quantidade'] += qtd_item
+                                        st.info(f"Quantidade de {cod_item} atualizada para {existente['quantidade']}.")
+                                    else:
+                                        st.session_state.itens_req.append({
+                                            'codigo': cod_item.strip(),
+                                            'descricao': desc_item,
+                                            'quantidade': int(qtd_item)
+                                        })
+                                    st.rerun()
+
+                    # Exibe lista corrente de itens
+                    if st.session_state.itens_req:
+                        st.markdown(f"**Itens na solicitação ({len(st.session_state.itens_req)}/{MAX_ITENS_REQUISICAO}):**")
+                        df_itens_view = pd.DataFrame(st.session_state.itens_req)
+                        df_itens_view.columns = ['Código', 'Descrição', 'Quantidade']
+                        st.dataframe(df_itens_view, use_container_width=True, hide_index=True)
+
+                        col_rem, col_limpar = st.columns([3, 1])
+                        cod_remover = col_rem.selectbox("Remover item:", ["—"] + [x['codigo'] for x in st.session_state.itens_req])
+                        if col_rem.button("🗑️ Remover"):
+                            if cod_remover != "—":
+                                st.session_state.itens_req = [x for x in st.session_state.itens_req if x['codigo'] != cod_remover]
+                                st.rerun()
+                        if col_limpar.button("🧹 Limpar Tudo"):
+                            st.session_state.itens_req = []
+                            st.rerun()
+
+                        st.markdown("---")
+                        if st.button("🚀 Enviar Solicitação", type="primary"):
+                            erros = []
+                            if tipo_db == "RDM":
+                                for item in st.session_state.itens_req:
+                                    df_disp = df[(df['Codigo'] == item['codigo']) & (df['CC'] == cc_req)]
+                                    saldo = df_disp['Quantidade'].sum() if not df_disp.empty else 0
+                                    if saldo < item['quantidade']:
+                                        erros.append(f"⛔ **{item['codigo']}** — saldo insuficiente no CC {cc_req}: {saldo} unid. (pedido: {item['quantidade']})")
+
+                            if erros:
+                                for e in erros:
+                                    st.error(e)
+                            else:
+                                with get_conn() as conn:
+                                    with conn.cursor() as cur:
+                                        cur.execute('''
+                                            INSERT INTO movimentacoes
+                                                (tipo, cc_destino, solicitante_email, retirante_nome)
+                                            VALUES (%s, %s, %s, %s)
+                                            RETURNING id
+                                        ''', (tipo_db, cc_req, user['email'], retirante))
+                                        novo_id = cur.fetchone()['id']
+
+                                        for item in st.session_state.itens_req:
+                                            cur.execute('''
+                                                INSERT INTO movimentacoes_itens
+                                                    (movimentacao_id, codigo_item, quantidade, descricao)
+                                                VALUES (%s, %s, %s, %s)
+                                            ''', (novo_id, item['codigo'], item['quantidade'], item['descricao']))
+
+                                st.session_state.itens_req = []
+                                st.success(f"✅ Solicitação #{novo_id} enviada com {len(st.session_state.itens_req) if st.session_state.itens_req else 'os'} itens!")
+                                st.rerun()
+                    else:
+                        st.info("Adicione pelo menos um item à solicitação.")
+
+            # ── ABA: Aprovações Pendentes ─────────────────────────────────────
             if len(abas_req) > 1:
                 with tabs_req[1]:
                     with get_conn() as conn:
                         with conn.cursor() as cur:
                             cur.execute("SELECT * FROM movimentacoes WHERE status = 'Pendente' ORDER BY data_solicitacao ASC")
                             pendentes = cur.fetchall()
-                    
+
                     if not pendentes:
                         st.info("Nenhuma solicitação pendente.")
                     else:
                         for req in pendentes:
-                            with st.expander(f"[{req['tipo']}] Item: {req['codigo_item']} | Qtd: {req['quantidade']} | Resp: {req['retirante_nome']}"):
-                                st.write(f"**CC:** {req['cc_destino']} | **Solicitante:** {req['solicitante_email']}")
+                            itens_req = carregar_itens_movimentacao(req['id'])
+                            resumo_itens = ", ".join([f"{x.get('codigo_item','?')} ({x.get('quantidade','?')} un)" for x in itens_req[:3]])
+                            if len(itens_req) > 3:
+                                resumo_itens += f" +{len(itens_req)-3} mais"
+
+                            with st.expander(
+                                f"[{req['tipo']}] #{req['id']} | {len(itens_req)} item(s) | Resp: {req['retirante_nome']} | CC: {req['cc_destino']}",
+                                expanded=False
+                            ):
+                                # ── Detalhes completos da solicitação ────────
+                                dt_sol = ajustar_fuso_br(req['data_solicitacao'])
+                                st.markdown(f"""
+                                <div class="req-detalhe-box">
+                                    <b>Tipo:</b> {req['tipo']} &nbsp;|&nbsp;
+                                    <b>Centro de Custo:</b> {req['cc_destino']} &nbsp;|&nbsp;
+                                    <b>Solicitante:</b> {req['solicitante_email']}<br>
+                                    <b>Responsável pela retirada:</b> {req['retirante_nome']} &nbsp;|&nbsp;
+                                    <b>Data:</b> {dt_sol.strftime('%d/%m/%Y %H:%M') if dt_sol else 'N/A'}
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                                # Tabela de itens
+                                if itens_req:
+                                    df_itens_aprov = pd.DataFrame(itens_req)
+                                    df_itens_aprov = df_itens_aprov.rename(columns={
+                                        'codigo_item': 'Código',
+                                        'quantidade': 'Quantidade',
+                                        'descricao': 'Descrição'
+                                    })
+                                    # Verifica saldo em tempo real (apenas RDM)
+                                    if req['tipo'] == 'RDM':
+                                        saldos = []
+                                        for _, row_i in df_itens_aprov.iterrows():
+                                            df_s = df[(df['Codigo'] == row_i['Código']) & (df['CC'] == req['cc_destino'])]
+                                            saldo_atual = df_s['Quantidade'].sum() if not df_s.empty else 0
+                                            ok = "✅" if saldo_atual >= row_i['Quantidade'] else "⚠️ Insuf."
+                                            saldos.append(f"{saldo_atual} ({ok})")
+                                        df_itens_aprov['Estoque Atual'] = saldos
+
+                                    st.dataframe(df_itens_aprov[['Código', 'Descrição', 'Quantidade'] + (['Estoque Atual'] if req['tipo'] == 'RDM' else [])],
+                                                 use_container_width=True, hide_index=True)
+
                                 c_btn1, c_btn2, _ = st.columns([1, 1, 3])
                                 if c_btn1.button("✅ Aprovar", key=f"apr_{req['id']}"):
                                     try:
                                         with get_conn() as conn:
                                             with conn.cursor() as cur:
-                                                cur.execute("BEGIN;")
-                                                if req['tipo'] == 'RDM':
-                                                    cur.execute('SELECT "Quantidade" FROM estoque WHERE "Codigo"=%s AND "CC"=%s FOR UPDATE', (req['codigo_item'], req['cc_destino']))
-                                                    saldo_db = cur.fetchone()
-                                                    if not saldo_db or saldo_db['Quantidade'] < req['quantidade']:
-                                                        st.error("Alerta: Sem estoque!")
-                                                        cur.execute("ROLLBACK;")
-                                                        st.stop()
-                                                    cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
-                                                else:
-                                                    cur.execute('SELECT id FROM estoque WHERE "Codigo"=%s AND "CC"=%s', (req['codigo_item'], req['cc_destino']))
-                                                    if cur.fetchone():
-                                                        cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
-                                                    else:
-                                                        cur.execute('SELECT "Descricao" FROM estoque WHERE "Codigo"=%s LIMIT 1', (req['codigo_item'],))
-                                                        cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (req['codigo_item'], cur.fetchone()['Descricao'], req['quantidade'], req['cc_destino']))
-                                                cur.execute("UPDATE movimentacoes SET status = 'Aprovado', data_aprovacao = NOW(), aprovador_email = %s WHERE id = %s", (user['email'], req['id']))
-                                                cur.execute("COMMIT;")
-                                        st.success("✅ Aprovado!")
+                                                for item in itens_req:
+                                                    cod_i = item.get('codigo_item') or item.get('Codigo')
+                                                    qtd_i = item.get('quantidade') or item.get('Quantidade')
+
+                                                    if req['tipo'] == 'RDM':
+                                                        cur.execute(
+                                                            'SELECT "Quantidade" FROM estoque WHERE "Codigo"=%s AND "CC"=%s FOR UPDATE',
+                                                            (cod_i, req['cc_destino'])
+                                                        )
+                                                        saldo_db = cur.fetchone()
+                                                        if not saldo_db or saldo_db['Quantidade'] < qtd_i:
+                                                            st.error(f"⛔ Sem estoque para {cod_i}!")
+                                                            st.stop()
+                                                        cur.execute(
+                                                            'UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s',
+                                                            (qtd_i, cod_i, req['cc_destino'])
+                                                        )
+                                                    else:  # CGM
+                                                        cur.execute(
+                                                            'SELECT id FROM estoque WHERE "Codigo"=%s AND "CC"=%s',
+                                                            (cod_i, req['cc_destino'])
+                                                        )
+                                                        if cur.fetchone():
+                                                            cur.execute(
+                                                                'UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s',
+                                                                (qtd_i, cod_i, req['cc_destino'])
+                                                            )
+                                                        else:
+                                                            cur.execute(
+                                                                'SELECT "Descricao" FROM estoque WHERE "Codigo"=%s LIMIT 1',
+                                                                (cod_i,)
+                                                            )
+                                                            row_desc = cur.fetchone()
+                                                            desc_ins = row_desc['Descricao'] if row_desc else (item.get('descricao') or '')
+                                                            cur.execute(
+                                                                'INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)',
+                                                                (cod_i, desc_ins, qtd_i, req['cc_destino'])
+                                                            )
+
+                                                cur.execute(
+                                                    "UPDATE movimentacoes SET status='Aprovado', data_aprovacao=NOW(), aprovador_email=%s WHERE id=%s",
+                                                    (user['email'], req['id'])
+                                                )
+
+                                        # Notifica o solicitante
+                                        tipo_texto = "Retirada de Material (RDM)" if req['tipo'] == 'RDM' else "Devolução de Material (CGM)"
+                                        msg_notif = (
+                                            f"Sua solicitação #{req['id']} ({tipo_texto}) foi **APROVADA** por {user['nome']}. "
+                                            f"Responsável: {req['retirante_nome']} | CC: {req['cc_destino']}."
+                                        )
+                                        criar_notificacao(req['solicitante_email'], req['id'], msg_notif)
+
+                                        st.success("✅ Aprovado e solicitante notificado!")
                                         st.cache_data.clear()
                                         st.rerun()
                                     except Exception as e:
                                         st.error(f"Erro: {e}")
+
                                 if c_btn2.button("❌ Rejeitar", key=f"rej_{req['id']}"):
                                     with get_conn() as conn:
                                         with conn.cursor() as cur:
-                                            cur.execute("UPDATE movimentacoes SET status = 'Rejeitado', aprovador_email = %s WHERE id = %s", (user['email'], req['id']))
+                                            cur.execute(
+                                                "UPDATE movimentacoes SET status='Rejeitado', aprovador_email=%s WHERE id=%s",
+                                                (user['email'], req['id'])
+                                            )
+                                    # Notifica rejeição
+                                    tipo_texto = "RDM" if req['tipo'] == 'RDM' else "CGM"
+                                    msg_rej = (
+                                        f"Sua solicitação #{req['id']} ({tipo_texto}) foi **REJEITADA** por {user['nome']}. "
+                                        f"Entre em contato com o almoxarife para mais detalhes."
+                                    )
+                                    criar_notificacao(req['solicitante_email'], req['id'], msg_rej)
                                     st.rerun()
 
                     st.divider()
@@ -638,12 +1007,12 @@ else:
                         with conn.cursor() as cur:
                             cur.execute("SELECT id, tipo, data_aprovacao FROM movimentacoes WHERE status = 'Aprovado' ORDER BY data_aprovacao DESC LIMIT 10")
                             aprovados = cur.fetchall()
-                    
+
                     for ap in aprovados:
                         col_txt, col_dl = st.columns([3, 1])
                         dt_apr = ajustar_fuso_br(ap['data_aprovacao'])
                         col_txt.write(f"#{ap['id']} - {ap['tipo']} (Aprovado em {dt_apr.strftime('%d/%m %H:%M')})")
-                        
+
                         html_str = gerar_html_comprovante(ap['id'])
                         if html_str:
                             col_dl.download_button(
@@ -654,57 +1023,111 @@ else:
                                 key=f"dl_html_{ap['id']}"
                             )
 
-        # ---------------------------------------------------------
-        # MÓDULO: CARGA POR COLABORADOR
-        # ---------------------------------------------------------
-        elif modulo_ativo == "📋 Carga por Colaborador":
-            st.subheader("🎒 Rastreabilidade de Materiais em Posse")
-            st.info("Calcula automaticamente o saldo físico de materiais com cada colaborador.")
-            
-            colab_alvo = st.selectbox("Selecione o Colaborador:", [""] + lista_colabs)
-            
-            if colab_alvo:
-                with get_conn() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            SELECT 
-                                m.codigo_item as "Código", 
-                                MAX(e."Descricao") as "Descrição",
-                                SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) - 
-                                SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END) as "Saldo em Mãos"
-                            FROM movimentacoes m
-                            LEFT JOIN estoque e ON m.codigo_item = e."Codigo"
-                            WHERE m.status = 'Aprovado' AND m.retirante_nome = %s
-                            GROUP BY m.codigo_item
-                            HAVING (SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) - SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END)) > 0
-                        """, (colab_alvo,))
-                        carga = cur.fetchall()
-                
-                if not carga:
-                    st.success(f"✅ O colaborador **{colab_alvo}** não possui materiais pendentes de devolução.")
-                else:
-                    st.warning(f"⚠️ Materiais atualmente alocados para **{colab_alvo}**:")
-                    st.dataframe(pd.DataFrame(carga), use_container_width=True, hide_index=True)
-                    
-                st.divider()
-                st.markdown("#### Histórico de Movimentações")
-                with get_conn() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute('''
-                            SELECT id, tipo as "Operação", codigo_item as "Código", quantidade as "Qtd", data_aprovacao as "Data Aprovação"
-                            FROM movimentacoes 
-                            WHERE status = 'Aprovado' AND retirante_nome = %s
-                            ORDER BY data_aprovacao DESC
-                        ''', (colab_alvo,))
-                        hist = cur.fetchall()
-                if hist:
-                    df_h = pd.DataFrame(hist)
-                    df_h['Data Aprovação'] = pd.to_datetime(df_h['Data Aprovação']).dt.tz_localize('UTC').dt.tz_convert('America/Sao_Paulo').dt.strftime('%d/%m/%Y %H:%M')
-                    st.dataframe(df_h, hide_index=True)
+        # ─────────────────────────────────────────────────────────────────────
+        # MÓDULO: CARGA EM MASSA (substitui "Carga por Colaborador" no menu interno)
+        # ─────────────────────────────────────────────────────────────────────
+        elif modulo_ativo == "📋 Carga em Massa":
+            st.subheader("📤 Carga em Massa de Movimentações (com Colaborador)")
+            st.info(
+                "Use esta planilha para importar RDMs e CGMs em lote. "
+                "O campo **Colaborador** alimenta automaticamente a rastreabilidade de carga."
+            )
 
-        # ---------------------------------------------------------
-        # MÓDULO 2: ESTOQUE 
-        # ---------------------------------------------------------
+            st.download_button(
+                "⬇️ Template Carga em Massa",
+                gerar_template_carga_massa(),
+                "template_carga_massa.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            arq_massa = st.file_uploader("Arquivo (.xlsx):", type=["xlsx"], key="carga_massa")
+            if arq_massa:
+                df_massa = pd.read_excel(arq_massa, engine='openpyxl').fillna('')
+                colunas_esperadas = {'Tipo', 'CC', 'Colaborador', 'Codigo_Item', 'Quantidade'}
+                if colunas_esperadas - set(df_massa.columns):
+                    st.error(f"⛔ Colunas obrigatórias: {', '.join(colunas_esperadas)}")
+                else:
+                    df_massa['Tipo']        = df_massa['Tipo'].astype(str).str.upper().str.strip()
+                    df_massa['CC']          = df_massa['CC'].astype(str).str.strip()
+                    df_massa['Colaborador'] = df_massa['Colaborador'].astype(str).str.strip().str.upper()
+                    df_massa['Codigo_Item'] = df_massa['Codigo_Item'].astype(str).str.strip()
+                    df_massa['Quantidade']  = pd.to_numeric(df_massa['Quantidade'], errors='coerce')
+                    df_massa = df_massa.dropna(subset=['Quantidade'])
+                    df_massa['Quantidade']  = df_massa['Quantidade'].astype(int)
+
+                    erros_massa = []
+                    for idx, row in df_massa.iterrows():
+                        if row['Tipo'] not in ('RDM', 'CGM'):
+                            erros_massa.append(f"Linha {idx+2}: Tipo '{row['Tipo']}' inválido.")
+                        if row['CC'] not in lista_cc:
+                            erros_massa.append(f"Linha {idx+2}: CC '{row['CC']}' não cadastrado.")
+                        if row['Colaborador'] not in lista_colabs:
+                            erros_massa.append(f"Linha {idx+2}: Colaborador '{row['Colaborador']}' não cadastrado.")
+
+                    if erros_massa:
+                        st.error("⛔ Erros encontrados — corrija antes de importar:")
+                        for e in erros_massa[:15]:
+                            st.write(f"• {e}")
+                    else:
+                        st.success(f"✅ Pré-validação OK — {len(df_massa)} linha(s) prontas para importação.")
+                        st.dataframe(df_massa, use_container_width=True, hide_index=True)
+
+                        if st.button("🚀 Importar Carga em Massa", type="primary"):
+                            # Agrupa por (Tipo, CC, Colaborador) → cria uma movimentação por grupo
+                            grupos = df_massa.groupby(['Tipo', 'CC', 'Colaborador'])
+                            total_movs = 0
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    for (tipo_g, cc_g, colab_g), grupo in grupos:
+                                        cur.execute('''
+                                            INSERT INTO movimentacoes
+                                                (tipo, cc_destino, solicitante_email, retirante_nome, status,
+                                                 data_aprovacao, aprovador_email)
+                                            VALUES (%s, %s, %s, %s, 'Aprovado', NOW(), %s)
+                                            RETURNING id
+                                        ''', (tipo_g, cc_g, user['email'], colab_g, user['email']))
+                                        mov_id = cur.fetchone()['id']
+
+                                        for _, item_row in grupo.iterrows():
+                                            desc_i = buscar_descricao_por_codigo(item_row['Codigo_Item']) or ''
+                                            cur.execute('''
+                                                INSERT INTO movimentacoes_itens
+                                                    (movimentacao_id, codigo_item, quantidade, descricao)
+                                                VALUES (%s, %s, %s, %s)
+                                            ''', (mov_id, item_row['Codigo_Item'], item_row['Quantidade'], desc_i))
+
+                                            # Atualiza estoque
+                                            if tipo_g == 'RDM':
+                                                cur.execute(
+                                                    'UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s',
+                                                    (item_row['Quantidade'], item_row['Codigo_Item'], cc_g)
+                                                )
+                                            else:
+                                                cur.execute(
+                                                    'SELECT id FROM estoque WHERE "Codigo"=%s AND "CC"=%s',
+                                                    (item_row['Codigo_Item'], cc_g)
+                                                )
+                                                if cur.fetchone():
+                                                    cur.execute(
+                                                        'UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s',
+                                                        (item_row['Quantidade'], item_row['Codigo_Item'], cc_g)
+                                                    )
+                                                else:
+                                                    cur.execute(
+                                                        'INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)',
+                                                        (item_row['Codigo_Item'], desc_i, item_row['Quantidade'], cc_g)
+                                                    )
+                                        total_movs += 1
+
+                            st.success(f"✅ {total_movs} movimentação(ões) criadas e aprovadas automaticamente!")
+                            del df_massa
+                            gc.collect()
+                            st.cache_data.clear()
+                            st.rerun()
+
+        # ─────────────────────────────────────────────────────────────────────
+        # MÓDULO 2: ESTOQUE
+        # ─────────────────────────────────────────────────────────────────────
         elif modulo_ativo == "📦 Gestão de Estoque":
             tabs_est = st.tabs(["📝 Registro Manual", "📤 Carga Excel"])
             with tabs_est[0]:
@@ -754,11 +1177,11 @@ else:
                     if {'Codigo', 'Descricao', 'Quantidade', 'CC'} - set(df_upload.columns):
                         st.error("Colunas inválidas.")
                     else:
-                        df_upload['Codigo'] = df_upload['Codigo'].astype(str).str.strip()
-                        df_upload['CC'] = df_upload['CC'].astype(str).str.strip()
+                        df_upload['Codigo']     = df_upload['Codigo'].astype(str).str.strip()
+                        df_upload['CC']         = df_upload['CC'].astype(str).str.strip()
                         df_upload['Quantidade'] = pd.to_numeric(df_upload['Quantidade'], errors='coerce')
                         df_upload = df_upload.dropna(subset=['Quantidade'])
-                        
+
                         invalid_ccs = set(df_upload['CC'].unique()) - set(lista_cc)
                         if invalid_ccs:
                             st.error(f"⛔ CCs não encontrados: {', '.join(invalid_ccs)}")
@@ -784,26 +1207,26 @@ else:
                             st.cache_data.clear()
                             st.rerun()
 
-        # ---------------------------------------------------------
-        # MÓDULO 3: TELEFONIA 
-        # ---------------------------------------------------------
+        # ─────────────────────────────────────────────────────────────────────
+        # MÓDULO 3: TELEFONIA
+        # ─────────────────────────────────────────────────────────────────────
         elif modulo_ativo == "📱 Telefonia":
             tabs_tel = st.tabs(["📱 Registro Individual", "📤 Carga em Massa"])
             with tabs_tel[0]:
                 st.subheader("Registrar / Editar Linha")
                 acao_tel = st.radio("Operação:", ["➕ Nova", "✏️ Editar", "🔄 Status"], horizontal=True)
-                
+
                 if acao_tel == "➕ Nova":
                     with st.form("nova_linha", clear_on_submit=True):
                         tc1, tc2 = st.columns(2)
-                        num_raw = tc1.text_input("Número (ex: 11 99999-0001):")
-                        conta_n = tc2.selectbox("Conta:", CONTAS_TELEFONIA)
+                        num_raw  = tc1.text_input("Número (ex: 11 99999-0001):")
+                        conta_n  = tc2.selectbox("Conta:", CONTAS_TELEFONIA)
                         tc3, tc4 = st.columns(2)
-                        oper_n = tc3.selectbox("Operadora:", OPERADORAS_TELEFONIA)
-                        colab_n = tc4.text_input("Nome do Colaborador:")
+                        oper_n   = tc3.selectbox("Operadora:", OPERADORAS_TELEFONIA)
+                        colab_n  = tc4.text_input("Nome do Colaborador:")
                         tc5, tc6 = st.columns(2)
-                        cc_n = tc5.selectbox("Centro de Custo:", lista_cc)
-                        loc_n = tc6.text_input("Gestor:")
+                        cc_n     = tc5.selectbox("Centro de Custo:", lista_cc)
+                        loc_n    = tc6.text_input("Gestor:")
 
                         if st.form_submit_button("✅ Cadastrar Linha"):
                             num_fmt = formatar_numero(num_raw)
@@ -839,14 +1262,14 @@ else:
                                 with st.form("editar_linha"):
                                     ec1, ec2 = st.columns(2)
                                     idx_conta = CONTAS_TELEFONIA.index(linha['Conta']) if linha['Conta'] in CONTAS_TELEFONIA else 0
-                                    idx_oper = OPERADORAS_TELEFONIA.index(linha['Operadora']) if linha['Operadora'] in OPERADORAS_TELEFONIA else 0
-                                    conta_e = ec1.selectbox("Conta:", CONTAS_TELEFONIA, index=idx_conta)
-                                    oper_e = ec2.selectbox("Operadora:", OPERADORAS_TELEFONIA, index=idx_oper)
-                                    ec3, ec4 = st.columns(2)
-                                    colab_e = ec3.text_input("Colaborador:", value=linha['Colaborador'] or "")
-                                    loc_e = ec4.text_input("Gestor:", value=linha['Gestor'] or "")
-                                    idx_cc = lista_cc.index(linha['CC']) if linha['CC'] in lista_cc else 0
-                                    cc_e = st.selectbox("Centro de Custo:", lista_cc, index=idx_cc)
+                                    idx_oper  = OPERADORAS_TELEFONIA.index(linha['Operadora']) if linha['Operadora'] in OPERADORAS_TELEFONIA else 0
+                                    conta_e   = ec1.selectbox("Conta:", CONTAS_TELEFONIA, index=idx_conta)
+                                    oper_e    = ec2.selectbox("Operadora:", OPERADORAS_TELEFONIA, index=idx_oper)
+                                    ec3, ec4  = st.columns(2)
+                                    colab_e   = ec3.text_input("Colaborador:", value=linha['Colaborador'] or "")
+                                    loc_e     = ec4.text_input("Gestor:", value=linha['Gestor'] or "")
+                                    idx_cc    = lista_cc.index(linha['CC']) if linha['CC'] in lista_cc else 0
+                                    cc_e      = st.selectbox("Centro de Custo:", lista_cc, index=idx_cc)
 
                                     if st.form_submit_button("💾 Salvar Alterações"):
                                         with get_conn() as conn:
@@ -875,9 +1298,10 @@ else:
                                     with get_conn() as conn:
                                         with conn.cursor() as cur:
                                             cur.execute('UPDATE telefonia SET "Status"=%s WHERE "Numero"=%s', (novo_status, num_fmt_st))
-                                    st.success(f"✅ Status alterado!")
+                                    st.success("✅ Status alterado!")
                                     st.cache_data.clear()
                                     st.rerun()
+
             with tabs_tel[1]:
                 st.download_button("⬇️ Template Telefonia", gerar_template_telefonia(), "tel.xlsx")
                 arq_tel = st.file_uploader("Arquivo Telefonia (.xlsx):", type=["xlsx"])
@@ -907,44 +1331,44 @@ else:
                     st.cache_data.clear()
                     st.rerun()
 
-        # ---------------------------------------------------------
-        # MÓDULO 4: ADMINISTRAÇÃO 
-        # ---------------------------------------------------------
+        # ─────────────────────────────────────────────────────────────────────
+        # MÓDULO 4: ADMINISTRAÇÃO
+        # ─────────────────────────────────────────────────────────────────────
         elif modulo_ativo == "⚙️ Administração":
             tabs_admin = st.tabs(["👥 Usuários", "🏢 Centros de Custo", "👷 Colaboradores", "🗑️ Exclusões"])
 
             with tabs_admin[0]:
                 st.subheader("Gestão de Acessos")
-                
+
                 with get_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute("SELECT id, email, nome, nivel, cc_permitido FROM usuarios")
                         lista_usuarios = cur.fetchall()
-                
+
                 acao_usr = st.radio("Ação:", ["➕ Criar Novo", "✏️ Editar Existente", "🗑️ Excluir"], horizontal=True)
-                
+
                 if acao_usr == "➕ Criar Novo":
                     if st.button("🛠️ Corrigir Sequência de IDs do Banco"):
                         try:
                             with get_conn() as conn:
                                 with conn.cursor() as cur:
                                     cur.execute("SELECT setval('usuarios_id_seq', COALESCE((SELECT MAX(id)+1 FROM usuarios), 1), false);")
-                            st.success("✅ Sequência de IDs corrigida! Tente criar o usuário novamente.")
+                            st.success("✅ Sequência de IDs corrigida!")
                         except Exception as e:
                             st.error(f"Erro ao corrigir sequência: {e}")
-                            
+
                     with st.form("form_usr"):
                         uc1, uc2 = st.columns(2)
                         n_email, n_senha = uc1.text_input("E-mail:"), uc2.text_input("Senha Inicial:", type="password")
                         uc3, uc4 = st.columns(2)
                         n_nivel = uc3.selectbox("Nível:", ["Leitor", "Gestor", "Almoxarife", "Master"])
-                        n_cc = uc4.multiselect("CCs:", ["Todos"] + lista_cc, default=["Todos"])
-                        
+                        n_cc    = uc4.multiselect("CCs:", ["Todos"] + lista_cc, default=["Todos"])
+
                         if st.form_submit_button("Criar Usuário") and n_email and n_senha:
                             try:
                                 with get_conn() as conn:
                                     with conn.cursor() as cur:
-                                        cur.execute('INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s,%s,%s,%s,%s)', 
+                                        cur.execute('INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s,%s,%s,%s,%s)',
                                                     (n_email.lower().strip(), n_senha, n_email.split('@')[0].capitalize(), n_nivel, "Todos" if "Todos" in n_cc else "|".join(n_cc)))
                                 st.success("✅ Usuário criado!")
                                 st.rerun()
@@ -953,24 +1377,22 @@ else:
                                 if "usuarios_email_key" in erro_real or "usuarios_email_unique" in erro_real:
                                     st.error("⛔ Este e-mail já existe de fato no banco de dados.")
                                 elif "usuarios_pkey" in erro_real:
-                                    st.error("⛔ Erro estrutural: Choque de ID. Clique no botão 'Corrigir Sequência' acima e tente novamente.")
+                                    st.error("⛔ Erro estrutural: Choque de ID. Clique no botão 'Corrigir Sequência' acima.")
                                 elif "usuarios_nivel_check" in erro_real:
                                     st.error("⛔ O nível de acesso selecionado não é aceito pelo banco.")
                                 else:
                                     st.error(f"⛔ Erro de Integridade Desconhecido:\n{erro_real}")
                             except Exception as e:
                                 st.error(f"⛔ Erro inesperado: {e}")
-                
+
                 elif acao_usr == "✏️ Editar Existente":
                     usr_selecionado = st.selectbox("Selecione o Usuário:", [u['email'] for u in lista_usuarios])
                     if usr_selecionado:
                         usr_data = next(u for u in lista_usuarios if u['email'] == usr_selecionado)
                         with st.form("form_edit_usr"):
                             st.write(f"Editando permissões de: **{usr_data['nome']}**")
-                            
                             idx_nivel = ["Leitor", "Gestor", "Almoxarife", "Master"].index(usr_data['nivel']) if usr_data['nivel'] in ["Leitor", "Gestor", "Almoxarife", "Master"] else 0
-                            n_nivel = st.selectbox("Nível:", ["Leitor", "Gestor", "Almoxarife", "Master"], index=idx_nivel)
-
+                            n_nivel   = st.selectbox("Nível:", ["Leitor", "Gestor", "Almoxarife", "Master"], index=idx_nivel)
                             cc_atuais = [c for c in usr_data['cc_permitido'].split('|') if c in ["Todos"] + lista_cc]
                             if not cc_atuais:
                                 cc_atuais = ["Todos"]
@@ -983,11 +1405,9 @@ else:
                                         cur.execute("UPDATE usuarios SET nivel=%s, cc_permitido=%s WHERE email=%s", (n_nivel, cc_db_val, usr_selecionado))
                                 st.success("✅ Usuário atualizado!")
                                 st.rerun()
-                
+
                 elif acao_usr == "🗑️ Excluir":
-                    # Impede que o usuário master logado exclua a si mesmo
                     opcoes_exclusao = [u['email'] for u in lista_usuarios if u['email'] != user['email']]
-                    
                     if not opcoes_exclusao:
                         st.info("Nenhum outro usuário disponível para exclusão.")
                     else:
@@ -998,7 +1418,7 @@ else:
                                     cur.execute("DELETE FROM usuarios WHERE email=%s", (usr_excluir,))
                             st.success(f"✅ Usuário {usr_excluir} excluído com sucesso!")
                             st.rerun()
-                                
+
                 st.divider()
                 st.write("**Usuários Cadastrados:**")
                 st.dataframe(pd.DataFrame(lista_usuarios), hide_index=True)
@@ -1018,7 +1438,7 @@ else:
                 with c_sec2:
                     st.subheader("🔄 De/Para (Individual)")
                     cc_antigo = st.selectbox("De:", lista_cc)
-                    cc_novo = st.text_input("Para (Novo Nome):")
+                    cc_novo   = st.text_input("Para (Novo Nome):")
                     if cc_novo and cc_antigo and aprovar_acao_master("rename_cc", f"Renomear {cc_antigo} → {cc_novo}"):
                         with get_conn() as conn:
                             with conn.cursor() as cur:
@@ -1066,7 +1486,7 @@ else:
             with tabs_admin[2]:
                 st.subheader("👷 Lista de Nomes para Retirada de Material")
                 c_colab1, c_colab2 = st.columns(2)
-                
+
                 with c_colab1:
                     st.markdown("##### 👤 Inclusão Individual")
                     novo_colab = st.text_input("Cadastrar Novo Colaborador (Nome Completo):")
@@ -1084,7 +1504,6 @@ else:
                     lista_massa = st.text_area("Cole a lista de colaboradores (um nome por linha):", height=150)
                     if st.button("➕ Processar Inclusão em Massa") and lista_massa:
                         novos_colabs = [nome.strip().upper() for nome in lista_massa.split('\n') if nome.strip()]
-                        
                         if novos_colabs:
                             with get_conn() as conn:
                                 with conn.cursor() as cur:
@@ -1092,10 +1511,10 @@ else:
                                         "INSERT INTO colaboradores (nome) VALUES (%s) ON CONFLICT DO NOTHING",
                                         [(nome,) for nome in novos_colabs]
                                     )
-                            st.success(f"✅ {len(novos_colabs)} colaboradores processados e adicionados!")
+                            st.success(f"✅ {len(novos_colabs)} colaboradores processados!")
                             st.cache_data.clear()
                             st.rerun()
-                
+
                 with c_colab2:
                     st.markdown("##### 🗑️ Remoção")
                     if lista_colabs:
@@ -1110,7 +1529,7 @@ else:
 
             with tabs_admin[3]:
                 c_del1, c_del2 = st.columns(2)
-                
+
                 with c_del1:
                     st.subheader("🗑️ Excluir Item/Linha Específica")
                     cod_excluir = st.text_input("Código do Almoxarifado para apagar:")
@@ -1121,7 +1540,7 @@ else:
                         st.success("Código apagado!")
                         st.cache_data.clear()
                         st.rerun()
-                    
+
                     st.markdown("---")
                     num_del = st.text_input("Número de Telefone a excluir:")
                     if num_del:
@@ -1147,7 +1566,7 @@ else:
                         st.success("Estoque limpo!")
                         st.cache_data.clear()
                         st.rerun()
-                    
+
                     st.markdown("---")
                     opcao_tel = st.radio("Telefonia:", ["Inativar todas", "Apagar todos os registros"])
                     if st.button("Executar Limpeza Telefonia") and aprovar_acao_master("limp_tel", f"Limpar {opcao_tel}"):
