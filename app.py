@@ -921,7 +921,7 @@ else:
                         cur.execute("SELECT id, email, nome, nivel, cc_permitido FROM usuarios")
                         lista_usuarios = cur.fetchall()
                 
-                acao_usr = st.radio("Ação:", ["➕ Criar Novo", "✏️ Editar Existente"], horizontal=True)
+                acao_usr = st.radio("Ação:", ["➕ Criar Novo", "✏️ Editar Existente", "🗑️ Excluir"], horizontal=True)
                 
                 if acao_usr == "➕ Criar Novo":
                     with st.form("form_usr"):
@@ -935,13 +935,16 @@ else:
                             try:
                                 with get_conn() as conn:
                                     with conn.cursor() as cur:
-                                        cur.execute('INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s,%s,%s,%s,%s)', (n_email.lower(), n_senha, n_email.split('@')[0].capitalize(), n_nivel, "Todos" if "Todos" in n_cc else "|".join(n_cc)))
+                                        cur.execute('INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s,%s,%s,%s,%s)', 
+                                                    (n_email.lower().strip(), n_senha, n_email.split('@')[0].capitalize(), n_nivel, "Todos" if "Todos" in n_cc else "|".join(n_cc)))
                                 st.success("✅ Usuário criado!")
                                 st.rerun()
-                            except:
-                                st.error("Email já cadastrado.")
+                            except psycopg2.IntegrityError:
+                                st.error("⛔ Email já cadastrado.")
+                            except Exception as e:
+                                st.error(f"⛔ Erro inesperado: {e}")
                 
-                else:
+                elif acao_usr == "✏️ Editar Existente":
                     usr_selecionado = st.selectbox("Selecione o Usuário:", [u['email'] for u in lista_usuarios])
                     if usr_selecionado:
                         usr_data = next(u for u in lista_usuarios if u['email'] == usr_selecionado)
@@ -963,6 +966,21 @@ else:
                                         cur.execute("UPDATE usuarios SET nivel=%s, cc_permitido=%s WHERE email=%s", (n_nivel, cc_db_val, usr_selecionado))
                                 st.success("✅ Usuário atualizado!")
                                 st.rerun()
+                
+                elif acao_usr == "🗑️ Excluir":
+                    # Impede que o usuário master logado exclua a si mesmo
+                    opcoes_exclusao = [u['email'] for u in lista_usuarios if u['email'] != user['email']]
+                    
+                    if not opcoes_exclusao:
+                        st.info("Nenhum outro usuário disponível para exclusão.")
+                    else:
+                        usr_excluir = st.selectbox("Selecione o Usuário para Excluir:", opcoes_exclusao)
+                        if st.button("🚨 Confirmar Exclusão") and usr_excluir:
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("DELETE FROM usuarios WHERE email=%s", (usr_excluir,))
+                            st.success(f"✅ Usuário {usr_excluir} excluído com sucesso!")
+                            st.rerun()
                                 
                 st.divider()
                 st.write("**Usuários Cadastrados:**")
