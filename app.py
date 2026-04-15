@@ -15,6 +15,7 @@ import random
 import re
 import os
 import gc  # Limpeza de memória
+from contextlib import contextmanager
 
 # 1. CONFIGURAÇÃO DA PÁGINA
 st.set_page_config(page_title="Inventário Brastel", layout="wide", page_icon="📦")
@@ -48,8 +49,13 @@ html, body, [class*="css"] { font-family: 'Sora', sans-serif; }
 """, unsafe_allow_html=True)
 
 # --- CONEXÃO COM SUPABASE ---
+@contextmanager
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    try:
+        yield conn
+    finally:
+        conn.close()  # Isso garante que a conexão será DESTRUÍDA após o uso
 
 # --- BANCO DE DADOS ---
 def init_db():
