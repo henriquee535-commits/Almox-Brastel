@@ -14,6 +14,7 @@ from email.mime.application import MIMEApplication
 import random
 import re
 import os
+import gc  # Adicionado para Limpeza de Memória
 from fpdf import FPDF
 
 # 1. CONFIGURAÇÃO DA PÁGINA
@@ -187,14 +188,13 @@ def gerar_pdf_comprovante(req_id):
     pdf = FPDF()
     pdf.add_page()
     
-    # Tentativa segura de carregar a Logo
     try:
         if os.path.exists("logo1.png"):
             pdf.image("logo1.png", x=10, y=8, w=40)
         elif os.path.exists("logo1.jpg"):
             pdf.image("logo1.jpg", x=10, y=8, w=40)
     except Exception:
-        pass # Segue gerando o documento se a logo estiver corrompida
+        pass 
                 
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, txt="BRASTEL - CONTROLE DE ALMOXARIFADO", ln=True, align='C')
@@ -229,19 +229,19 @@ def gerar_pdf_comprovante(req_id):
     pdf.cell(90, 8, txt="Assinatura do Almoxarife", ln=False, align='C')
     pdf.cell(90, 8, txt=f"Assinatura de {req['retirante_nome']}", ln=True, align='C')
 
-    # Trata a saída independentemente da versão do FPDF instalada
     out = pdf.output(dest='S')
     if isinstance(out, str):
         return out.encode('latin-1')
     return bytes(out)
 
-# Cache vital para não gerar PDFs na memória repetidas vezes e travar a aplicação
-@st.cache_data(show_spinner=False)
+# OTIMIZAÇÃO 1: Limite de cache dos PDFs na RAM (evita estouro de memória)
+@st.cache_data(show_spinner=False, max_entries=10, ttl=60)
 def gerar_pdf_cached(req_id):
     return gerar_pdf_comprovante(req_id)
 
-# ── cache db ──────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
+# ── cache db com otimização de memória ────────────────────────────────────────
+# OTIMIZAÇÃO 2: Compressão de DataFrames do Pandas
+@st.cache_data(ttl=120, max_entries=2)
 def carregar_estoque():
     with get_conn() as conn:
         with conn.cursor() as c:
@@ -249,17 +249,22 @@ def carregar_estoque():
             rows = c.fetchall()
     df = pd.DataFrame(rows, columns=['Codigo', 'Descricao', 'Quantidade', 'CC'])
     if not df.empty:
-        df['Quantidade'] = df['Quantidade'].astype(int)
+        df['Quantidade'] = pd.to_numeric(df['Quantidade'], downcast='integer')
+        df['CC'] = df['CC'].astype('category')
     return df
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=120, max_entries=2)
 def carregar_telefonia():
     with get_conn() as conn:
         with conn.cursor() as c:
             c.execute('SELECT "Numero","Conta","Operadora","Colaborador","CC","Status","Gestor" FROM telefonia ORDER BY "Conta","Numero"')
             rows = c.fetchall()
     cols = ['Numero', 'Conta', 'Operadora', 'Colaborador', 'CC', 'Status', 'Gestor']
-    return pd.DataFrame(rows, columns=cols)
+    df_tel = pd.DataFrame(rows, columns=cols)
+    if not df_tel.empty:
+        for col in ['Conta', 'Operadora', 'CC', 'Status']:
+            df_tel[col] = df_tel[col].astype('category')
+    return df_tel
 
 @st.cache_data
 def carregar_ccs():
@@ -617,7 +622,7 @@ else:
                         if not cod_req or not retirante:
                             st.error("Preencha todos os campos obrigatórios.")
                         else:
-                            # 1. Trava de Segurança Mestre (Bloqueia itens fantasmas)
+                            # Trava de Segurança Mestre
                             desc_valida = buscar_descricao_por_codigo(cod_req)
                             
                             if not desc_valida:
@@ -625,7 +630,6 @@ else:
                             else:
                                 pode_prosseguir = True
                                 
-                                # 2. Validação de Saldo (RDM)
                                 if tipo_db == "RDM":
                                     df_disp = df[(df['Codigo'] == cod_req) & (df['CC'] == cc_req)]
                                     saldo = df_disp['Quantidade'].sum() if not df_disp.empty else 0
@@ -675,7 +679,6 @@ else:
                                                         st.stop()
                                                     cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
                                                 else:
-                                                    # Lógica CGM corrigida: Soma ou Insere se o CC não tiver o item
                                                     cur.execute('SELECT id FROM estoque WHERE "Codigo"=%s AND "CC"=%s', (req['codigo_item'], req['cc_destino']))
                                                     if cur.fetchone():
                                                         cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
@@ -715,7 +718,6 @@ else:
                         dt_apr_ui = ajustar_fuso_br(ap['data_aprovacao'])
                         col_txt.write(f"#{ap['id']} - {ap['tipo']} - Retirante: {ap['retirante_nome']} (Aprovado em {dt_apr_ui.strftime('%d/%m %H:%M')})")
                         
-                        # Função rodando em cache para não travar a UI
                         pdf_bytes = gerar_pdf_cached(ap['id'])
                         
                         if pdf_bytes:
@@ -822,6 +824,12 @@ else:
                                             if updates: cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', updates)
                                     conn.commit()
                                     st.success(f"✅ Importação concluída! {len(inserts)} novos, {len(updates)} atualizados.")
+                                    
+                                    # OTIMIZAÇÃO 3: Limpeza de memória do Pandas
+                                    del df_upload
+                                    del db_set
+                                    gc.collect()
+
                                     st.cache_data.clear()
                                     st.rerun()
                     except Exception as e: st.error(f"Erro: {e}")
@@ -965,6 +973,12 @@ else:
                                 conn.commit()
                                 if erros: st.warning("⚠️ Alguns registros foram ignorados:\n" + "\n".join(erros))
                                 st.success(f"✅ Importação concluída! {len(inserts_tel)} novos, {len(updates_tel)} atualizados.")
+                                
+                                # OTIMIZAÇÃO 3: Limpeza de memória do Pandas
+                                del df_tel_up
+                                del nums_db
+                                gc.collect()
+
                                 st.cache_data.clear()
                                 st.rerun()
                     except Exception as e: st.error(f"Erro: {e}")
