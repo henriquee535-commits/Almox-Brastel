@@ -155,45 +155,52 @@ def enviar_email_pin(destinatario, pin):
     except Exception as e:
         return False, str(e)
 
-@st.experimental_dialog("Ação Restrita - Validação por PIN")
-def modal_validar_pin(chave_acao, mensagem_acao):
-    st.warning(f"Ação solicitada: **{mensagem_acao}**")
+def aprovar_acao_master(chave, mensagem):
+    """Retorna True se o usuário validou o PIN para aquela ação."""
     
-    if f"pin_gerado_{chave_acao}" not in st.session_state:
+    # Se o PIN já foi validado neste fluxo, libera a ação e reseta os estados
+    if st.session_state.get(f"pin_validado_{chave}", False):
+        st.session_state.pop(f"pin_validado_{chave}", None)
+        st.session_state.pop(f"esperando_pin_{chave}", None)
+        st.session_state.pop(f"pin_gerado_{chave}", None)
+        return True
+
+    st.warning(f"⚠️ Ação restrita: **{mensagem}**")
+    
+    # Botão inicial para solicitar o envio do PIN
+    if st.button(f"🔓 Solicitar Desbloqueio", key=f"btn_iniciar_{chave}"):
+        st.session_state[f"esperando_pin_{chave}"] = True
+        
         pin_novo = str(random.randint(100000, 999999))
-        st.session_state[f"pin_gerado_{chave_acao}"] = pin_novo
+        st.session_state[f"pin_gerado_{chave}"] = pin_novo
         
         sucesso, erro = enviar_email_pin(st.session_state.usuario_logado['email'], pin_novo)
         if sucesso:
             st.success("✉️ PIN enviado para o seu e-mail corporativo.")
         else:
             st.error(f"Erro ao enviar e-mail. Verifique o st.secrets. Erro: {erro}")
-            # Fallback de segurança para não travar o app em caso de erro no SMTP
+            # Fallback para você conseguir testar mesmo se o envio de e-mail falhar
             st.info(f"FALLBACK DE SEGURANÇA (Para testes): O PIN é {pin_novo}")
-    
-    pin_digitado = st.text_input("Digite o PIN numérico de 6 dígitos:", key=f"input_{chave_acao}")
-    
-    if st.button("Validar e Executar"):
-        if pin_digitado.strip() == st.session_state[f"pin_gerado_{chave_acao}"]:
-            st.session_state[f"pin_validado_{chave_acao}"] = True
-            st.rerun()
-        else:
-            st.error("PIN incorreto.")
 
-def aprovar_acao_master(chave, mensagem):
-    """Retorna True se o usuário validou o PIN para aquela ação."""
-    if st.button(f"Desbloquear: {mensagem}", key=f"btn_iniciar_{chave}"):
-        modal_validar_pin(chave, mensagem)
-        
-    if st.session_state.get(f"pin_validado_{chave}", False):
-        st.success("✅ Ação Desbloqueada.")
-        # Limpa o state para a próxima vez
-        st.session_state.pop(f"pin_validado_{chave}")
-        if f"pin_gerado_{chave}" in st.session_state:
-            st.session_state.pop(f"pin_gerado_{chave}")
-        return True
+    # Interface de digitação do PIN (só aparece após clicar no botão acima)
+    if st.session_state.get(f"esperando_pin_{chave}", False):
+        with st.container():
+            st.info("Verifique seu e-mail e insira o código numérico de 6 dígitos abaixo.")
+            pin_digitado = st.text_input("PIN:", key=f"input_{chave}")
+            
+            c1, c2 = st.columns([1, 5])
+            if c1.button("Validar PIN", key=f"btn_validar_{chave}", type="primary"):
+                if pin_digitado.strip() == st.session_state.get(f"pin_gerado_{chave}"):
+                    st.session_state[f"pin_validado_{chave}"] = True
+                    st.rerun()
+                else:
+                    st.error("❌ PIN incorreto.")
+            
+            if c2.button("Cancelar", key=f"btn_cancelar_{chave}"):
+                st.session_state.pop(f"esperando_pin_{chave}", None)
+                st.rerun()
+                
     return False
-
 def formatar_numero(raw: str):
     digits = re.sub(r'\D', '', str(raw))
     if len(digits) == 11 and digits[2] == '9': return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
