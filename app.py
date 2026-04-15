@@ -164,13 +164,12 @@ def logout():
     st.session_state.usuario_logado = None
     st.rerun()
 
-# Ajuste global de fuso horário (-3 horas para o Brasil)
 def ajustar_fuso_br(dt_obj):
     if dt_obj:
         return dt_obj - timedelta(hours=3)
     return None
 
-# ── pdf ───────────────────────────────────────────────────────────────────────
+# ── pdf blindado e performático ──────────────────────────────────────────────
 def gerar_pdf_comprovante(req_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -182,21 +181,20 @@ def gerar_pdf_comprovante(req_id):
             desc = cur.fetchone()
             descricao = desc['Descricao'] if desc else "Descrição não encontrada"
 
-    # Aplicando a correção de fuso horário no PDF
     dt_sol = ajustar_fuso_br(req['data_solicitacao'])
     dt_apr = ajustar_fuso_br(req['data_aprovacao'])
 
     pdf = FPDF()
     pdf.add_page()
     
-    # Tentativa de carregar a Logo1 no PDF
-    for ext in ['png', 'jpg', 'jpeg']:
-        if os.path.exists(f"logo1.{ext}"):
-            try:
-                pdf.image(f"logo1.{ext}", x=10, y=8, w=40)
-                break
-            except Exception:
-                pass
+    # Tentativa segura de carregar a Logo
+    try:
+        if os.path.exists("logo1.png"):
+            pdf.image("logo1.png", x=10, y=8, w=40)
+        elif os.path.exists("logo1.jpg"):
+            pdf.image("logo1.jpg", x=10, y=8, w=40)
+    except Exception:
+        pass # Segue gerando o documento se a logo estiver corrompida
                 
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, txt="BRASTEL - CONTROLE DE ALMOXARIFADO", ln=True, align='C')
@@ -231,9 +229,18 @@ def gerar_pdf_comprovante(req_id):
     pdf.cell(90, 8, txt="Assinatura do Almoxarife", ln=False, align='C')
     pdf.cell(90, 8, txt=f"Assinatura de {req['retirante_nome']}", ln=True, align='C')
 
-    return pdf.output(dest='S').encode('latin-1')
+    # Trata a saída independentemente da versão do FPDF instalada
+    out = pdf.output(dest='S')
+    if isinstance(out, str):
+        return out.encode('latin-1')
+    return bytes(out)
 
-# ── cache ─────────────────────────────────────────────────────────────────────
+# Cache vital para não gerar PDFs na memória repetidas vezes e travar a aplicação
+@st.cache_data(show_spinner=False)
+def gerar_pdf_cached(req_id):
+    return gerar_pdf_comprovante(req_id)
+
+# ── cache db ──────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def carregar_estoque():
     with get_conn() as conn:
@@ -373,9 +380,8 @@ if st.session_state.usuario_logado:
         logout()
 st.sidebar.markdown(f"🟢 **{total_ativos}/{LIMITE_PESSOAS}** pessoas online")
 
-
 # ══════════════════════════════════════════════════════════════════
-# TELA 1: CONSULTA — ALMOXARIFADO (Código Original Intacto)
+# TELA 1: CONSULTA — ALMOXARIFADO 
 # ══════════════════════════════════════════════════════════════════
 if menu == "📊 Consulta":
     src1 = logo_para_base64("logo1.png")
@@ -461,7 +467,7 @@ if menu == "📊 Consulta":
 
 
 # ══════════════════════════════════════════════════════════════════
-# TELA 2: CONSULTA — TELEFONIA (Código Original Intacto)
+# TELA 2: CONSULTA — TELEFONIA
 # ══════════════════════════════════════════════════════════════════
 elif menu == "📱 Telefonia":
     src1 = logo_para_base64("logo1.png")
@@ -552,7 +558,7 @@ elif menu == "📱 Telefonia":
 
 
 # ══════════════════════════════════════════════════════════════════
-# TELA 3: SISTEMA INTERNO (Reestruturado com Submenus)
+# TELA 3: SISTEMA INTERNO
 # ══════════════════════════════════════════════════════════════════
 else:
     if not st.session_state.usuario_logado:
@@ -570,14 +576,12 @@ else:
         user = st.session_state.usuario_logado
         st.title("Sistema Interno — Brastel")
         
-        # Filtro de CCs baseado na string salva no BD (separada por |)
         user_ccs_str = user['cc_permitido']
         if user_ccs_str == 'Todos':
             cc_opcoes = lista_cc
         else:
             cc_opcoes = [c.strip() for c in user_ccs_str.split('|')]
 
-        # Controle de Módulos (Menu Horizontal)
         modulos_disp = ["🛒 Requisições (RDM/CGM)"]
         if user['nivel'] in ['Almoxarife', 'Master']:
             modulos_disp.extend(["📦 Gestão de Estoque", "📱 Gestão de Telefonia"])
@@ -613,23 +617,31 @@ else:
                         if not cod_req or not retirante:
                             st.error("Preencha todos os campos obrigatórios.")
                         else:
-                            pode_prosseguir = True
-                            if tipo_db == "RDM":
-                                df_disp = df[(df['Codigo'] == cod_req) & (df['CC'] == cc_req)]
-                                saldo = df_disp['Quantidade'].sum() if not df_disp.empty else 0
-                                if saldo < qtd_req:
-                                    st.error(f"⛔ Saldo insuficiente. Estoque atual no CC {cc_req}: {saldo} unidades.")
-                                    pode_prosseguir = False
+                            # 1. Trava de Segurança Mestre (Bloqueia itens fantasmas)
+                            desc_valida = buscar_descricao_por_codigo(cod_req)
                             
-                            if pode_prosseguir:
-                                with get_conn() as conn:
-                                    with conn.cursor() as cur:
-                                        cur.execute('''
-                                            INSERT INTO movimentacoes (tipo, cc_destino, solicitante_email, retirante_nome, codigo_item, quantidade)
-                                            VALUES (%s, %s, %s, %s, %s, %s)
-                                        ''', (tipo_db, cc_req, user['email'], retirante, cod_req, qtd_req))
-                                    conn.commit()
-                                st.success("✅ Solicitação enviada ao Almoxarifado com sucesso!")
+                            if not desc_valida:
+                                st.error(f"⛔ O código '{cod_req}' não está cadastrado no sistema da empresa. Peça ao almoxarifado para registrar o item primeiro.")
+                            else:
+                                pode_prosseguir = True
+                                
+                                # 2. Validação de Saldo (RDM)
+                                if tipo_db == "RDM":
+                                    df_disp = df[(df['Codigo'] == cod_req) & (df['CC'] == cc_req)]
+                                    saldo = df_disp['Quantidade'].sum() if not df_disp.empty else 0
+                                    if saldo < qtd_req:
+                                        st.error(f"⛔ Saldo insuficiente. Estoque atual no CC {cc_req}: {saldo} unidades.")
+                                        pode_prosseguir = False
+                                
+                                if pode_prosseguir:
+                                    with get_conn() as conn:
+                                        with conn.cursor() as cur:
+                                            cur.execute('''
+                                                INSERT INTO movimentacoes (tipo, cc_destino, solicitante_email, retirante_nome, codigo_item, quantidade)
+                                                VALUES (%s, %s, %s, %s, %s, %s)
+                                            ''', (tipo_db, cc_req, user['email'], retirante, cod_req, qtd_req))
+                                        conn.commit()
+                                    st.success("✅ Solicitação enviada ao Almoxarifado com sucesso!")
 
             if len(abas_req) > 1:
                 with tabs_req[1]:
@@ -645,7 +657,6 @@ else:
                         for req in pendentes:
                             with st.expander(f"[{req['tipo']}] Item: {req['codigo_item']} | Qtd: {req['quantidade']} | Req: {req['solicitante_email']}"):
                                 st.write(f"**CC:** {req['cc_destino']} | **Retirante:** {req['retirante_nome']}")
-                                # Aplicando fuso do brasil para exibição na UI
                                 dt_sol_ui = ajustar_fuso_br(req['data_solicitacao'])
                                 st.write(f"**Data da Solicitação:** {dt_sol_ui.strftime('%d/%m/%Y %H:%M')}")
                                 
@@ -664,16 +675,14 @@ else:
                                                         st.stop()
                                                     cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
                                                 else:
-                                                    # Lógica CGM corrigida (Insere se não existir no CC)
+                                                    # Lógica CGM corrigida: Soma ou Insere se o CC não tiver o item
                                                     cur.execute('SELECT id FROM estoque WHERE "Codigo"=%s AND "CC"=%s', (req['codigo_item'], req['cc_destino']))
                                                     if cur.fetchone():
                                                         cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (req['quantidade'], req['codigo_item'], req['cc_destino']))
                                                     else:
-                                                        # Busca descrição em qualquer outro CC para aproveitar
                                                         cur.execute('SELECT "Descricao" FROM estoque WHERE "Codigo"=%s LIMIT 1', (req['codigo_item'],))
                                                         desc_row = cur.fetchone()
-                                                        desc_item = desc_row['Descricao'] if desc_row else "Item Devolvido (Sem descrição prévia)"
-                                                        cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (req['codigo_item'], desc_item, req['quantidade'], req['cc_destino']))
+                                                        cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (req['codigo_item'], desc_row['Descricao'], req['quantidade'], req['cc_destino']))
                                                 
                                                 cur.execute('''
                                                     UPDATE movimentacoes 
@@ -705,12 +714,15 @@ else:
                         col_txt, col_dl = st.columns([3, 1])
                         dt_apr_ui = ajustar_fuso_br(ap['data_aprovacao'])
                         col_txt.write(f"#{ap['id']} - {ap['tipo']} - Retirante: {ap['retirante_nome']} (Aprovado em {dt_apr_ui.strftime('%d/%m %H:%M')})")
-                        pdf_bytes = gerar_pdf_comprovante(ap['id'])
+                        
+                        # Função rodando em cache para não travar a UI
+                        pdf_bytes = gerar_pdf_cached(ap['id'])
+                        
                         if pdf_bytes:
                             col_dl.download_button(label="📄 Baixar PDF", data=pdf_bytes, file_name=f"Documento_{ap['tipo']}_{ap['id']}.pdf", mime="application/pdf", key=f"dl_pdf_{ap['id']}")
 
         # ---------------------------------------------------------
-        # MÓDULO 2: ESTOQUE (Totalmente Restaurado)
+        # MÓDULO 2: ESTOQUE 
         # ---------------------------------------------------------
         elif modulo_ativo == "📦 Gestão de Estoque":
             abas_est = ["📝 Registro Individual", "📤 Carga em Massa"]
@@ -815,7 +827,7 @@ else:
                     except Exception as e: st.error(f"Erro: {e}")
 
         # ---------------------------------------------------------
-        # MÓDULO 3: TELEFONIA (Totalmente Restaurado)
+        # MÓDULO 3: TELEFONIA 
         # ---------------------------------------------------------
         elif modulo_ativo == "📱 Gestão de Telefonia":
             abas_tel = ["📱 Registro Individual", "📤 Carga em Massa"]
@@ -958,7 +970,7 @@ else:
                     except Exception as e: st.error(f"Erro: {e}")
 
         # ---------------------------------------------------------
-        # MÓDULO 4: ADMINISTRAÇÃO (Master Exclusivo)
+        # MÓDULO 4: ADMINISTRAÇÃO 
         # ---------------------------------------------------------
         elif modulo_ativo == "⚙️ Administração":
             abas_admin = ["👥 Usuários", "🏢 Centros de Custo", "🗑️ Área de Exclusão"]
@@ -974,7 +986,7 @@ else:
                     
                     uc3, uc4 = st.columns(2)
                     nivel_acc = uc3.selectbox("Nível de Permissão:", ["Leitor", "Gestor", "Almoxarife", "Master"])
-                    cc_acc = uc4.multiselect("Centros de Custo Permitidos (Múltiplos permitidos):", ["Todos"] + lista_cc, default=["Todos"])
+                    cc_acc = uc4.multiselect("Centros de Custo Permitidos:", ["Todos"] + lista_cc, default=["Todos"])
                     
                     if st.form_submit_button("Cadastrar Usuário"):
                         if novo_email and nova_senha:
