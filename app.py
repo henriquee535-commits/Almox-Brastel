@@ -24,8 +24,11 @@ SENHA_ACESSO = st.secrets.get("SENHA_ACESSO", "123")
 SENHA_ZERAR_ESTOQUE = st.secrets.get("SENHA_ZERAR_ESTOQUE", "123")
 DATABASE_URL = st.secrets["DATABASE_URL"]
 
-EMAIL_USER = st.secrets.get("EMAIL_USER", "")
-EMAIL_PASS = st.secrets.get("EMAIL_PASS", "")
+# ── MELHORIA 3: CORREÇÃO SMTP ──
+# Lê do bloco [email] do secrets.toml: remetente, senha, destinatario
+EMAIL_USER = st.secrets.get("email", {}).get("remetente", st.secrets.get("EMAIL_USER", ""))
+EMAIL_PASS = st.secrets.get("email", {}).get("senha", st.secrets.get("EMAIL_PASS", ""))
+EMAIL_DEST = st.secrets.get("email", {}).get("destinatario", EMAIL_USER)
 
 LIMITE_PESSOAS = 40
 TEMPO_INATIVIDADE = 1
@@ -34,6 +37,9 @@ MAX_ITENS_REQUISICAO = 20
 CONTAS_TELEFONIA = ["ENGIA", "BRASTEL", "ATTRON"]
 OPERADORAS_TELEFONIA = ["Claro", "Vivo", "TIM", "Oi", "Algar", "Nextel", "Outra"]
 STATUS_TELEFONIA = ["Ativo", "Inativo"]
+
+# ── MELHORIA 4: GESTOR REMOVIDO ── Níveis: Leitor, Almoxarife, Master
+NIVEIS_USUARIO = ["Leitor", "Almoxarife", "Master"]
 
 # --- CSS GLOBAL ---
 st.markdown("""
@@ -72,63 +78,104 @@ def init_db():
             c.execute('CREATE TABLE IF NOT EXISTS centros_custo (nome TEXT PRIMARY KEY)')
             c.execute('CREATE TABLE IF NOT EXISTS colaboradores (nome TEXT PRIMARY KEY)')
             c.execute('CREATE TABLE IF NOT EXISTS telefonia (id SERIAL PRIMARY KEY, "Numero" TEXT UNIQUE, "Conta" TEXT, "Operadora" TEXT, "Colaborador" TEXT, "CC" TEXT, "Status" TEXT DEFAULT \'Ativo\', "Gestor" TEXT)')
-            c.execute('CREATE TABLE IF NOT EXISTS usuarios (id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, senha TEXT NOT NULL, nome TEXT NOT NULL, nivel TEXT CHECK (nivel IN (\'Leitor\', \'Gestor\', \'Almoxarife\', \'Master\')), cc_permitido TEXT DEFAULT \'Todos\')')
-            
+            # ── MELHORIA 4: constraint SEM Gestor ──
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS usuarios (
+                    id SERIAL PRIMARY KEY,
+                    email TEXT UNIQUE NOT NULL,
+                    senha TEXT NOT NULL,
+                    nome TEXT NOT NULL,
+                    nivel TEXT CHECK (nivel IN (\'Leitor\', \'Almoxarife\', \'Master\')),
+                    cc_permitido TEXT DEFAULT \'Todos\'
+                )
+            ''')
             c.execute('''
                 CREATE TABLE IF NOT EXISTS movimentacoes (
-                    id SERIAL PRIMARY KEY, tipo TEXT CHECK (tipo IN ('RDM', 'CGM')), cc_destino TEXT NOT NULL, solicitante_email TEXT NOT NULL, retirante_nome TEXT NOT NULL, codigo_item TEXT, quantidade INTEGER, status TEXT DEFAULT 'Pendente' CHECK (status IN ('Pendente', 'Aprovado', 'Rejeitado')), data_solicitacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP, data_aprovacao TIMESTAMP, aprovador_email TEXT
+                    id SERIAL PRIMARY KEY, tipo TEXT CHECK (tipo IN ('RDM', 'CGM')),
+                    cc_destino TEXT NOT NULL, solicitante_email TEXT NOT NULL,
+                    retirante_nome TEXT NOT NULL, codigo_item TEXT, quantidade INTEGER,
+                    status TEXT DEFAULT 'Pendente' CHECK (status IN ('Pendente', 'Aprovado', 'Rejeitado')),
+                    data_solicitacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    data_aprovacao TIMESTAMP, aprovador_email TEXT
                 )
             ''')
             c.execute('''
                 CREATE TABLE IF NOT EXISTS movimentacoes_itens (
-                    id SERIAL PRIMARY KEY, movimentacao_id INTEGER REFERENCES movimentacoes(id) ON DELETE CASCADE, codigo_item TEXT NOT NULL, quantidade INTEGER NOT NULL, descricao TEXT
+                    id SERIAL PRIMARY KEY, movimentacao_id INTEGER REFERENCES movimentacoes(id) ON DELETE CASCADE,
+                    codigo_item TEXT NOT NULL, quantidade INTEGER NOT NULL, descricao TEXT
                 )
             ''')
             c.execute('''
                 CREATE TABLE IF NOT EXISTS notificacoes (
-                    id SERIAL PRIMARY KEY, destinatario_email TEXT NOT NULL, movimentacao_id INTEGER REFERENCES movimentacoes(id) ON DELETE CASCADE, mensagem TEXT NOT NULL, lida BOOLEAN DEFAULT FALSE, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    id SERIAL PRIMARY KEY, destinatario_email TEXT NOT NULL,
+                    movimentacao_id INTEGER REFERENCES movimentacoes(id) ON DELETE CASCADE,
+                    mensagem TEXT NOT NULL, lida BOOLEAN DEFAULT FALSE,
+                    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-
             c.execute("SELECT count(*) as total FROM usuarios")
             if c.fetchone()['total'] == 0:
-                c.execute("INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s, %s, %s, %s, %s)", 
+                c.execute("INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s, %s, %s, %s, %s)",
                           ('master@brastelnet.com.br', SENHA_ZERAR_ESTOQUE, 'Administrador', 'Master', 'Todos'))
+
+    # ── MELHORIA 4: migração — Gestor → Almoxarife + atualizar constraint ──
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as c:
+                c.execute("UPDATE usuarios SET nivel = 'Almoxarife' WHERE nivel = 'Gestor'")
+                c.execute("ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_nivel_check")
+                c.execute("ALTER TABLE usuarios ADD CONSTRAINT usuarios_nivel_check CHECK (nivel IN ('Leitor', 'Almoxarife', 'Master'))")
+    except Exception:
+        pass
 
     try:
         with get_conn() as conn:
             with conn.cursor() as c:
                 c.execute('ALTER TABLE movimentacoes ALTER COLUMN codigo_item DROP NOT NULL;')
                 c.execute('ALTER TABLE movimentacoes ALTER COLUMN quantidade DROP NOT NULL;')
-    except Exception: pass
+    except Exception:
+        pass
 
 init_db()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. HELPERS E SISTEMA DE PIN
 # ══════════════════════════════════════════════════════════════════════════════
-if 'usuario_logado' not in st.session_state: st.session_state.usuario_logado = None
+if 'usuario_logado' not in st.session_state:
+    st.session_state.usuario_logado = None
 
 def enviar_email_pin(destinatario, pin):
+    """
+    MELHORIA 3 — CORREÇÃO SMTP OUTLOOK:
+    • Lê EMAIL_USER / EMAIL_PASS do bloco [email] do secrets.toml
+    • Detecta office365 para domínios brastelnet/outlook/hotmail/live
+    • ehlo() antes e depois de starttls() — obrigatório no Office 365
+    • Timeout de 15 s para não travar a UI
+    """
     try:
         msg = MIMEMultipart()
         msg['From'] = EMAIL_USER
         msg['To'] = destinatario
         msg['Subject'] = "Seu Código de Autorização - Sistema Brastel"
-        body = f"Seu código PIN para autorizar uma ação Master no sistema de Almoxarifado é: {pin}\n\nSe não foi você, ignore este e-mail."
+        body = (
+            f"Seu código PIN para autorizar uma ação Master no sistema de Almoxarifado é: {pin}\n\n"
+            "Se não foi você, ignore este e-mail."
+        )
         msg.attach(MIMEText(body, 'plain'))
-        
+
         dominio_email = EMAIL_USER.lower()
         if any(x in dominio_email for x in ['@outlook', '@hotmail', '@live', '@office365', 'brastelnet']):
-            smtp_server = 'smtp.office365.com'
+            smtp_server_default = 'smtp.office365.com'
         else:
-            smtp_server = 'smtp.gmail.com'
-            
-        smtp_server = st.secrets.get("SMTP_SERVER", smtp_server)
-        smtp_port = st.secrets.get("SMTP_PORT", 587)
+            smtp_server_default = 'smtp.gmail.com'
 
-        server = smtplib.SMTP(smtp_server, smtp_port)
+        smtp_server = st.secrets.get("SMTP_SERVER", smtp_server_default)
+        smtp_port   = int(st.secrets.get("SMTP_PORT", 587))
+
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
+        server.ehlo()
         server.starttls()
+        server.ehlo()  # segundo ehlo obrigatório após starttls no Office 365
         server.login(EMAIL_USER, EMAIL_PASS)
         server.send_message(msg)
         server.quit()
@@ -144,14 +191,14 @@ def aprovar_acao_master(chave, mensagem):
         return True
 
     st.warning(f"⚠️ Ação restrita: **{mensagem}**")
-    
+
     if st.button(f"🔓 Solicitar Desbloqueio", key=f"btn_iniciar_{chave}"):
         st.session_state[f"esperando_pin_{chave}"] = True
         pin_novo = str(random.randint(100000, 999999))
         st.session_state[f"pin_gerado_{chave}"] = pin_novo
-        
         sucesso, erro = enviar_email_pin(st.session_state.usuario_logado['email'], pin_novo)
-        if sucesso: st.success("✉️ PIN enviado para o seu e-mail.")
+        if sucesso:
+            st.success("✉️ PIN enviado para o seu e-mail.")
         else:
             st.error(f"Erro no SMTP do e-mail: {erro}")
             st.info(f"FALLBACK DE SEGURANÇA: Seu PIN é {pin_novo}")
@@ -160,32 +207,33 @@ def aprovar_acao_master(chave, mensagem):
         with st.container():
             st.info("Insira o código numérico de 6 dígitos enviado ao seu e-mail.")
             pin_digitado = st.text_input("PIN:", key=f"input_{chave}")
-            
             c1, c2 = st.columns([1, 5])
             if c1.button("Validar PIN", key=f"btn_validar_{chave}", type="primary"):
                 if pin_digitado.strip() == st.session_state.get(f"pin_gerado_{chave}"):
-                    st.session_state[f"pin_validado_{chave}"] = True; st.rerun()
-                else: st.error("❌ PIN incorreto.")
-            
+                    st.session_state[f"pin_validado_{chave}"] = True
+                    st.rerun()
+                else:
+                    st.error("❌ PIN incorreto.")
             if c2.button("Cancelar", key=f"btn_cancelar_{chave}"):
-                st.session_state.pop(f"esperando_pin_{chave}", None); st.rerun()
+                st.session_state.pop(f"esperando_pin_{chave}", None)
+                st.rerun()
     return False
 
 def formatar_numero(raw: str):
     digits = re.sub(r'\D', '', str(raw))
-    if len(digits) == 11 and digits[2] == '9': return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
-    elif len(digits) == 10: return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+    if len(digits) == 11 and digits[2] == '9':
+        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+    elif len(digits) == 10:
+        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
     return None
 
 def realizar_login(email, senha):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM usuarios WHERE email=%s AND senha=%s", (email.strip().lower(), senha))
-            if cur.fetchone():
-                st.session_state.usuario_logado = cur.fetchone()
-                # Correção no login (precisamos pegar o dict corretamente)
-                cur.execute("SELECT * FROM usuarios WHERE email=%s AND senha=%s", (email.strip().lower(), senha))
-                st.session_state.usuario_logado = cur.fetchone()
+            row = cur.fetchone()
+            if row:
+                st.session_state.usuario_logado = dict(row)
                 return True
     return False
 
@@ -200,15 +248,19 @@ def ajustar_fuso_br(dt_obj):
 def logo_para_base64(path):
     for tentativa in [path, path.replace('.png', '.jpg'), path.replace('.png', '.jpeg')]:
         try:
-            with open(tentativa, "rb") as f: return f"data:image/{'png' if tentativa.endswith('png') else 'jpeg'};base64,{base64.b64encode(f.read()).decode()}"
-        except FileNotFoundError: continue
+            with open(tentativa, "rb") as f:
+                return f"data:image/{'png' if tentativa.endswith('png') else 'jpeg'};base64,{base64.b64encode(f.read()).decode()}"
+        except FileNotFoundError:
+            continue
     return None
 
 def criar_notificacao(dest_email, mov_id, msg):
     try:
         with get_conn() as conn:
-            with conn.cursor() as cur: cur.execute("INSERT INTO notificacoes (destinatario_email, movimentacao_id, mensagem) VALUES (%s, %s, %s)", (dest_email, mov_id, msg))
-    except: pass
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO notificacoes (destinatario_email, movimentacao_id, mensagem) VALUES (%s, %s, %s)", (dest_email, mov_id, msg))
+    except Exception:
+        pass
 
 def contar_notificacoes_nao_lidas(email: str):
     with get_conn() as conn:
@@ -218,7 +270,8 @@ def contar_notificacoes_nao_lidas(email: str):
 
 def marcar_notificacoes_lidas(email: str):
     with get_conn() as conn:
-        with conn.cursor() as cur: cur.execute("UPDATE notificacoes SET lida=TRUE WHERE destinatario_email=%s", (email,))
+        with conn.cursor() as cur:
+            cur.execute("UPDATE notificacoes SET lida=TRUE WHERE destinatario_email=%s", (email,))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. FUNÇÕES DE DADOS E CACHE
@@ -226,7 +279,7 @@ def marcar_notificacoes_lidas(email: str):
 @st.cache_data(ttl=120, max_entries=2)
 def carregar_estoque():
     with get_conn() as conn:
-        with conn.cursor() as c: 
+        with conn.cursor() as c:
             c.execute('SELECT "Codigo", "Descricao", "Quantidade", "CC" FROM estoque')
             df = pd.DataFrame(c.fetchall(), columns=['Codigo', 'Descricao', 'Quantidade', 'CC'])
     if not df.empty:
@@ -237,30 +290,31 @@ def carregar_estoque():
 @st.cache_data(ttl=120, max_entries=2)
 def carregar_telefonia():
     with get_conn() as conn:
-        with conn.cursor() as c: 
+        with conn.cursor() as c:
             c.execute('SELECT "Numero","Conta","Operadora","Colaborador","CC","Status","Gestor" FROM telefonia ORDER BY "Conta","Numero"')
             df_tel = pd.DataFrame(c.fetchall(), columns=['Numero', 'Conta', 'Operadora', 'Colaborador', 'CC', 'Status', 'Gestor'])
     if not df_tel.empty:
-        for col in ['Conta', 'Operadora', 'CC', 'Status']: df_tel[col] = df_tel[col].astype('category')
+        for col in ['Conta', 'Operadora', 'CC', 'Status']:
+            df_tel[col] = df_tel[col].astype('category')
     return df_tel
 
 @st.cache_data
 def carregar_ccs():
     with get_conn() as conn:
-        with conn.cursor() as c: 
+        with conn.cursor() as c:
             c.execute("SELECT nome FROM centros_custo ORDER BY nome")
             return [r['nome'] for r in c.fetchall()] or ["Geral"]
 
 @st.cache_data
 def carregar_colaboradores():
     with get_conn() as conn:
-        with conn.cursor() as c: 
+        with conn.cursor() as c:
             c.execute("SELECT nome FROM colaboradores ORDER BY nome")
             return [r['nome'] for r in c.fetchall()]
 
 def buscar_descricao_por_codigo(cod):
     with get_conn() as conn:
-        with conn.cursor() as c: 
+        with conn.cursor() as c:
             c.execute('SELECT DISTINCT "Descricao" FROM estoque WHERE "Codigo" = %s', (cod,))
             res = c.fetchone()
             return res['Descricao'] if res else None
@@ -273,7 +327,8 @@ def carregar_itens_movimentacao(mov_id: int):
             if not itens:
                 cur.execute('SELECT codigo_item, quantidade FROM movimentacoes WHERE id=%s AND codigo_item IS NOT NULL', (mov_id,))
                 row = cur.fetchone()
-                if row and row['codigo_item']: itens = [{'codigo_item': row['codigo_item'], 'quantidade': row['quantidade'], 'descricao': None}]
+                if row and row['codigo_item']:
+                    itens = [{'codigo_item': row['codigo_item'], 'quantidade': row['quantidade'], 'descricao': None}]
             return itens
 
 @st.cache_data(show_spinner=False, max_entries=20, ttl=120)
@@ -282,7 +337,8 @@ def gerar_html_comprovante(req_id):
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM movimentacoes WHERE id = %s", (req_id,))
             req = cur.fetchone()
-            if not req: return None
+            if not req:
+                return None
 
     itens = carregar_itens_movimentacao(req_id)
     dt_sol = ajustar_fuso_br(req['data_solicitacao'])
@@ -330,9 +386,50 @@ def gerar_template_carga_massa():
     return buf.getvalue()
 
 # ══════════════════════════════════════════════════════════════════════════════
+# MELHORIA 1: Zerar carga de colaboradores ao excluir um código do estoque
+# ══════════════════════════════════════════════════════════════════════════════
+def zerar_carga_por_codigo(codigo: str, aprovador_email: str) -> int:
+    """
+    Cria CGMs automáticas de devolução para todos os colaboradores que
+    têm saldo em mãos do código informado. Retorna nº de devoluções criadas.
+    """
+    devolvidos = 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    m.retirante_nome,
+                    m.cc_destino,
+                    mi.codigo_item,
+                    MAX(mi.descricao) AS descricao,
+                    SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE -mi.quantidade END) AS saldo
+                FROM movimentacoes_itens mi
+                JOIN movimentacoes m ON m.id = mi.movimentacao_id
+                WHERE m.status = 'Aprovado' AND mi.codigo_item = %s
+                GROUP BY m.retirante_nome, m.cc_destino, mi.codigo_item
+                HAVING SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE -mi.quantidade END) > 0
+            """, (codigo,))
+            pendentes = cur.fetchall()
+
+            for p in pendentes:
+                cur.execute("""
+                    INSERT INTO movimentacoes
+                        (tipo, cc_destino, solicitante_email, retirante_nome, status, data_aprovacao, aprovador_email)
+                    VALUES ('CGM', %s, %s, %s, 'Aprovado', NOW(), %s) RETURNING id
+                """, (p['cc_destino'], aprovador_email, p['retirante_nome'], aprovador_email))
+                cid = cur.fetchone()['id']
+                cur.execute(
+                    "INSERT INTO movimentacoes_itens (movimentacao_id, codigo_item, quantidade, descricao) VALUES (%s, %s, %s, %s)",
+                    (cid, p['codigo_item'], p['saldo'], p['descricao'])
+                )
+                devolvidos += 1
+    return devolvidos
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 5. CONTROLE DE SESSÃO
 # ══════════════════════════════════════════════════════════════════════════════
-if 'sessao_id' not in st.session_state: st.session_state.sessao_id = str(uuid.uuid4())
+if 'sessao_id' not in st.session_state:
+    st.session_state.sessao_id = str(uuid.uuid4())
 
 with get_conn() as conn:
     with conn.cursor() as c:
@@ -362,27 +459,24 @@ if st.session_state.usuario_logado:
     qtd_notif = contar_notificacoes_nao_lidas(user['email'])
     badge = f" 🔴 {qtd_notif}" if qtd_notif > 0 else ""
     st.sidebar.success(f"👤 Olá, {user['nome']}{badge}\n\nNível: {user['nivel']}")
-    if st.sidebar.button("Sair / Logout"): logout()
+    if st.sidebar.button("Sair / Logout"):
+        logout()
 st.sidebar.markdown(f"🟢 **{total_ativos}/{LIMITE_PESSOAS}** pessoas online")
 
 if menu == "📊 Consulta":
     st.title("📦 Inventário Brastel")
     df_ativos = df[df['Quantidade'] > 0]
-    
     col1, col2, col3 = st.columns(3)
     col1.metric("Total de Peças em Estoque", f"{df_ativos['Quantidade'].sum():.0f}")
     col2.metric("Itens Únicos Diferentes", df_ativos['Codigo'].nunique())
     col3.metric("Centros de Custo Ativos", df_ativos['CC'].nunique())
     st.divider()
-
     c_b, c_f = st.columns([2, 1])
     busca = c_b.text_input("🔍 Pesquisar Código ou Descrição:")
     cc_filtro = c_f.selectbox("🏢 Filtrar por Centro de Custo:", ["Todos"] + lista_cc)
-
     df_filt = df_ativos.copy()
     if cc_filtro != "Todos": df_filt = df_filt[df_filt['CC'] == cc_filtro]
     if busca: df_filt = df_filt[df_filt['Codigo'].astype(str).str.contains(busca, case=False) | df_filt['Descricao'].str.contains(busca, case=False, na=False)]
-
     if not df_filt.empty:
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as writer: df_filt.to_excel(writer, index=False)
@@ -391,25 +485,21 @@ if menu == "📊 Consulta":
 
 elif menu == "📱 Telefonia":
     st.title("📱 Telefonia Brastel")
-    
     col1, col2, col3 = st.columns(3)
     col1.metric("Total de Linhas Registradas", len(df_tel))
     col2.metric("Linhas Ativas", len(df_tel[df_tel['Status'] == 'Ativo']) if not df_tel.empty else 0)
     col3.metric("Centros de Custo Associados", df_tel['CC'].nunique() if not df_tel.empty else 0)
     st.divider()
-
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
     busca_tel = c1.text_input("🔍 Pesquisar Número/Colaborador:")
     conta_filt = c2.selectbox("🏢 Conta:", ["Todas"] + CONTAS_TELEFONIA)
     status_filt = c3.selectbox("✅ Status:", ["Todos"] + STATUS_TELEFONIA)
     cc_filt_tel = c4.selectbox("📂 Centro de Custo:", ["Todos"] + lista_cc)
-
     df_tel_filt = df_tel.copy()
     if conta_filt != "Todas": df_tel_filt = df_tel_filt[df_tel_filt['Conta'] == conta_filt]
     if status_filt != "Todos": df_tel_filt = df_tel_filt[df_tel_filt['Status'] == status_filt]
     if cc_filt_tel != "Todos": df_tel_filt = df_tel_filt[df_tel_filt['CC'] == cc_filt_tel]
     if busca_tel: df_tel_filt = df_tel_filt[df_tel_filt['Numero'].astype(str).str.contains(busca_tel, case=False) | df_tel_filt['Colaborador'].astype(str).str.contains(busca_tel, case=False, na=False)]
-
     if not df_tel_filt.empty:
         buf2 = io.BytesIO()
         with pd.ExcelWriter(buf2, engine='openpyxl') as writer: df_tel_filt.to_excel(writer, index=False)
@@ -446,14 +536,17 @@ else:
                 if st.button("✅ Marcar todas como lidas"):
                     marcar_notificacoes_lidas(user['email']); st.rerun()
 
+        # ── MELHORIA 4: módulos sem Gestor ──
         modulos_disp = ["🛒 Requisições (RDM/CGM)", "👁️ Carga por Colaborador", "👤 Meu Perfil"]
-        if user['nivel'] in ['Almoxarife', 'Master']: modulos_disp.extend(["📦 Gestão de Estoque", "📱 Telefonia", "📋 Carga em Massa"])
-        if user['nivel'] in ['Gestor', 'Almoxarife', 'Master']: modulos_disp.append("📜 Relatórios e Logs")
-        if user['nivel'] == 'Master': modulos_disp.append("⚙️ Administração")
+        if user['nivel'] in ['Almoxarife', 'Master']:
+            modulos_disp.extend(["📦 Gestão de Estoque", "📱 Telefonia", "📋 Carga em Massa", "📜 Relatórios e Logs"])
+        if user['nivel'] == 'Master':
+            modulos_disp.append("⚙️ Administração")
 
         modulo_ativo = st.radio("Módulo:", modulos_disp, horizontal=True)
         st.divider()
 
+        # ────────────────────────────────────────────
         if modulo_ativo == "👤 Meu Perfil":
             st.subheader("Configurações da Conta")
             st.write(f"**Nome:** {user['nome']}\n\n**E-mail:** {user['email']}\n\n**Nível:** {user['nivel']}")
@@ -477,32 +570,41 @@ else:
                 with get_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute("""
-                            SELECT mi.codigo_item AS "Código", MAX(mi.descricao) AS "Descrição", SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE 0 END) - SUM(CASE WHEN m.tipo = 'CGM' THEN mi.quantidade ELSE 0 END) AS "Saldo em Mãos"
+                            SELECT mi.codigo_item AS "Código", MAX(mi.descricao) AS "Descrição",
+                                SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE 0 END) -
+                                SUM(CASE WHEN m.tipo = 'CGM' THEN mi.quantidade ELSE 0 END) AS "Saldo em Mãos"
                             FROM movimentacoes_itens mi JOIN movimentacoes m ON m.id = mi.movimentacao_id
                             WHERE m.status = 'Aprovado' AND m.retirante_nome = %s
-                            GROUP BY mi.codigo_item HAVING (SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE 0 END) - SUM(CASE WHEN m.tipo = 'CGM' THEN mi.quantidade ELSE 0 END)) > 0
+                            GROUP BY mi.codigo_item
+                            HAVING (SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE 0 END) -
+                                    SUM(CASE WHEN m.tipo = 'CGM' THEN mi.quantidade ELSE 0 END)) > 0
                         """, (colab_alvo,))
                         carga = cur.fetchall()
-                        
                         cur.execute("""
-                            SELECT m.codigo_item AS "Código", NULL AS "Descrição", SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) - SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END) AS "Saldo em Mãos"
-                            FROM movimentacoes m WHERE m.status = 'Aprovado' AND m.retirante_nome = %s AND m.codigo_item IS NOT NULL AND m.id NOT IN (SELECT DISTINCT movimentacao_id FROM movimentacoes_itens)
-                            GROUP BY m.codigo_item HAVING (SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) - SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END)) > 0
+                            SELECT m.codigo_item AS "Código", NULL AS "Descrição",
+                                SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) -
+                                SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END) AS "Saldo em Mãos"
+                            FROM movimentacoes m
+                            WHERE m.status = 'Aprovado' AND m.retirante_nome = %s
+                              AND m.codigo_item IS NOT NULL
+                              AND m.id NOT IN (SELECT DISTINCT movimentacao_id FROM movimentacoes_itens)
+                            GROUP BY m.codigo_item
+                            HAVING (SUM(CASE WHEN m.tipo = 'RDM' THEN m.quantidade ELSE 0 END) -
+                                    SUM(CASE WHEN m.tipo = 'CGM' THEN m.quantidade ELSE 0 END)) > 0
                         """, (colab_alvo,))
                         carga_total = list(carga) + list(cur.fetchall())
-                        
                 if not carga_total: st.success("✅ Sem materiais pendentes.")
                 else: st.warning(f"⚠️ Materiais alocados para {colab_alvo}:"); st.dataframe(pd.DataFrame(carga_total), use_container_width=True, hide_index=True)
-
-                st.divider()
-                st.markdown("#### Histórico")
+                st.divider(); st.markdown("#### Histórico")
                 with get_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute('''
                             SELECT m.id, m.tipo AS "Operação", mi.codigo_item AS "Código", mi.quantidade AS "Qtd", m.data_aprovacao AS "Data"
                             FROM movimentacoes m JOIN movimentacoes_itens mi ON mi.movimentacao_id = m.id WHERE m.status = 'Aprovado' AND m.retirante_nome = %s
                             UNION ALL
-                            SELECT id, tipo, codigo_item, quantidade, data_aprovacao FROM movimentacoes WHERE status = 'Aprovado' AND retirante_nome = %s AND codigo_item IS NOT NULL AND id NOT IN (SELECT DISTINCT movimentacao_id FROM movimentacoes_itens)
+                            SELECT id, tipo, codigo_item, quantidade, data_aprovacao FROM movimentacoes
+                            WHERE status = 'Aprovado' AND retirante_nome = %s AND codigo_item IS NOT NULL
+                              AND id NOT IN (SELECT DISTINCT movimentacao_id FROM movimentacoes_itens)
                             ORDER BY "Data" DESC
                         ''', (colab_alvo, colab_alvo))
                         hist = cur.fetchall()
@@ -517,51 +619,75 @@ else:
             tabs_req = st.tabs(abas_req)
 
             with tabs_req[0]:
-                if not lista_colabs: st.warning("⚠️ Solicite o cadastro de Colaboradores antes.")
+                # ── MELHORIA 2: avisos se não há CC ou colaborador cadastrado ──
+                if not lista_colabs:
+                    st.error("⛔ Nenhum Colaborador cadastrado. Solicite o cadastro ao administrador antes de criar uma solicitação.")
+                elif not lista_cc:
+                    st.error("⛔ Nenhum Centro de Custo cadastrado. Solicite o cadastro ao administrador antes de criar uma solicitação.")
                 else:
                     with st.form("form_nova_solicitacao", clear_on_submit=True):
                         col_t1, col_t2 = st.columns(2)
                         tipo_req = col_t1.radio("Tipo:", ["RDM (Retirar Material)", "CGM (Devolver Material)"], horizontal=True)
                         tipo_db = "RDM" if "RDM" in tipo_req else "CGM"
+                        # ── MELHORIA 2: selectbox limitado a CCs cadastrados ──
                         cc_req = col_t2.selectbox("Centro de Custo:", cc_opcoes)
+                        # ── MELHORIA 2: selectbox limitado a colaboradores cadastrados ──
                         retirante = st.selectbox("Colaborador Responsável (Que irá receber/devolver):", lista_colabs)
 
                         st.markdown(f"#### 📦 Itens da Solicitação *(máx. {MAX_ITENS_REQUISICAO})*")
-                        if 'grid_itens' not in st.session_state: st.session_state.grid_itens = pd.DataFrame([{"Código": "", "Quantidade": 1} for _ in range(5)])
+                        if 'grid_itens' not in st.session_state:
+                            st.session_state.grid_itens = pd.DataFrame([{"Código": "", "Quantidade": 1} for _ in range(5)])
 
-                        edited_df = st.data_editor(st.session_state.grid_itens, num_rows="dynamic", use_container_width=True, column_config={"Código": st.column_config.TextColumn("Código do Item", required=True), "Quantidade": st.column_config.NumberColumn("Quantidade", min_value=1, step=1, default=1)}, key="editor_itens_req")
-                        
+                        edited_df = st.data_editor(
+                            st.session_state.grid_itens, num_rows="dynamic", use_container_width=True,
+                            column_config={
+                                "Código": st.column_config.TextColumn("Código do Item", required=True),
+                                "Quantidade": st.column_config.NumberColumn("Quantidade", min_value=1, step=1, default=1)
+                            }, key="editor_itens_req"
+                        )
+
                         if st.form_submit_button("🚀 Processar e Enviar Solicitação", type="primary", use_container_width=True):
-                            df_v = edited_df.copy()
-                            df_v['Código'] = df_v['Código'].astype(str).str.strip()
-                            df_v = df_v[(df_v['Código'] != "") & (df_v['Código'] != "nan")]
+                            # ── MELHORIA 2: validação dupla no submit ──
+                            erros_trava = []
+                            if cc_req not in lista_cc:
+                                erros_trava.append(f"❌ Centro de Custo **{cc_req}** não está cadastrado.")
+                            if retirante not in lista_colabs:
+                                erros_trava.append(f"❌ Colaborador **{retirante}** não está cadastrado.")
 
-                            if df_v.empty: st.error("⛔ Adicione itens.")
-                            elif len(df_v) > MAX_ITENS_REQUISICAO: st.error("⛔ Limite excedido.")
+                            if erros_trava:
+                                for e in erros_trava: st.error(e)
                             else:
-                                erros, itens_proc = [], []
-                                df_g = df_v.groupby("Código", as_index=False).sum()
+                                df_v = edited_df.copy()
+                                df_v['Código'] = df_v['Código'].astype(str).str.strip()
+                                df_v = df_v[(df_v['Código'] != "") & (df_v['Código'] != "nan")]
 
-                                for _, row in df_g.iterrows():
-                                    cod, qtd = str(row["Código"]), int(row["Quantidade"])
-                                    desc = buscar_descricao_por_codigo(cod)
-                                    if not desc: erros.append(f"❌ Código **{cod}** não existe.")
-                                    elif tipo_db == "RDM":
-                                        saldo = df[(df['Codigo'] == cod) & (df['CC'] == cc_req)]['Quantidade'].sum() if not df[(df['Codigo'] == cod) & (df['CC'] == cc_req)].empty else 0
-                                        if saldo < qtd: erros.append(f"❌ **{cod}**: Saldo insuf. ({saldo} no CC {cc_req}).")
-                                    if not erros: itens_proc.append({'codigo': cod, 'quantidade': qtd, 'descricao': desc})
-                                        
-                                if erros:
-                                    st.error("⛔ Corrija:")
-                                    for e in erros: st.write(e)
+                                if df_v.empty: st.error("⛔ Adicione itens.")
+                                elif len(df_v) > MAX_ITENS_REQUISICAO: st.error("⛔ Limite excedido.")
                                 else:
-                                    with get_conn() as conn:
-                                        with conn.cursor() as cur:
-                                            cur.execute('INSERT INTO movimentacoes (tipo, cc_destino, solicitante_email, retirante_nome) VALUES (%s, %s, %s, %s) RETURNING id', (tipo_db, cc_req, user['email'], retirante))
-                                            novo_id = cur.fetchone()['id']
-                                            for item in itens_proc: cur.execute('INSERT INTO movimentacoes_itens (movimentacao_id, codigo_item, quantidade, descricao) VALUES (%s, %s, %s, %s)', (novo_id, item['codigo'], item['quantidade'], item['descricao']))
-                                    st.success(f"✅ Solicitação #{novo_id} enviada!")
-                                    st.session_state.grid_itens = pd.DataFrame([{"Código": "", "Quantidade": 1} for _ in range(5)]); st.rerun()
+                                    erros, itens_proc = [], []
+                                    df_g = df_v.groupby("Código", as_index=False).sum()
+                                    for _, row in df_g.iterrows():
+                                        cod, qtd = str(row["Código"]), int(row["Quantidade"])
+                                        desc = buscar_descricao_por_codigo(cod)
+                                        if not desc: erros.append(f"❌ Código **{cod}** não existe.")
+                                        elif tipo_db == "RDM":
+                                            saldo = df[(df['Codigo'] == cod) & (df['CC'] == cc_req)]['Quantidade'].sum() if not df[(df['Codigo'] == cod) & (df['CC'] == cc_req)].empty else 0
+                                            if saldo < qtd: erros.append(f"❌ **{cod}**: Saldo insuf. ({saldo} no CC {cc_req}).")
+                                        if not erros: itens_proc.append({'codigo': cod, 'quantidade': qtd, 'descricao': desc})
+
+                                    if erros:
+                                        st.error("⛔ Corrija:")
+                                        for e in erros: st.write(e)
+                                    else:
+                                        with get_conn() as conn:
+                                            with conn.cursor() as cur:
+                                                cur.execute('INSERT INTO movimentacoes (tipo, cc_destino, solicitante_email, retirante_nome) VALUES (%s, %s, %s, %s) RETURNING id', (tipo_db, cc_req, user['email'], retirante))
+                                                novo_id = cur.fetchone()['id']
+                                                for item in itens_proc:
+                                                    cur.execute('INSERT INTO movimentacoes_itens (movimentacao_id, codigo_item, quantidade, descricao) VALUES (%s, %s, %s, %s)', (novo_id, item['codigo'], item['quantidade'], item['descricao']))
+                                        st.success(f"✅ Solicitação #{novo_id} enviada!")
+                                        st.session_state.grid_itens = pd.DataFrame([{"Código": "", "Quantidade": 1} for _ in range(5)])
+                                        st.rerun()
 
             if len(abas_req) > 1:
                 with tabs_req[1]:
@@ -569,7 +695,6 @@ else:
                         with conn.cursor() as cur:
                             cur.execute("SELECT * FROM movimentacoes WHERE status = 'Pendente' ORDER BY data_solicitacao ASC")
                             pendentes = cur.fetchall()
-                            
                     if not pendentes: st.info("Nenhuma pendente.")
                     else:
                         for req in pendentes:
@@ -577,7 +702,6 @@ else:
                             with st.expander(f"[{req['tipo']}] #{req['id']} | {len(itens_req)} item(s) | Resp: {req['retirante_nome']} | CC: {req['cc_destino']}", expanded=False):
                                 dt_sol = ajustar_fuso_br(req['data_solicitacao'])
                                 st.markdown(f"<div class='req-detalhe-box'><b>Solicitante:</b> {req['solicitante_email']} | <b>Data:</b> {dt_sol.strftime('%d/%m/%Y %H:%M') if dt_sol else 'N/A'}</div>", unsafe_allow_html=True)
-
                                 if itens_req:
                                     df_i = pd.DataFrame(itens_req).rename(columns={'codigo_item': 'Código', 'quantidade': 'Qtd', 'descricao': 'Descrição'})
                                     if req['tipo'] == 'RDM':
@@ -588,7 +712,6 @@ else:
                                             saldos.append(f"{sa} ({'✅' if sa >= ri['Qtd'] else '⚠️'})")
                                         df_i['Estoque Atual'] = saldos
                                     st.dataframe(df_i, use_container_width=True, hide_index=True)
-
                                 c_btn1, c_btn2, _ = st.columns([1, 1, 3])
                                 if c_btn1.button("✅ Aprovar", key=f"apr_{req['id']}"):
                                     try:
@@ -617,14 +740,11 @@ else:
                                         with conn.cursor() as cur: cur.execute("UPDATE movimentacoes SET status='Rejeitado', aprovador_email=%s WHERE id=%s", (user['email'], req['id']))
                                     criar_notificacao(req['solicitante_email'], req['id'], f"Rejeitada por {user['nome']}.")
                                     st.rerun()
-
-                    st.divider()
-                    st.subheader("🖨️ Comprovantes")
+                    st.divider(); st.subheader("🖨️ Comprovantes")
                     with get_conn() as conn:
                         with conn.cursor() as cur:
                             cur.execute("SELECT id, tipo, data_aprovacao FROM movimentacoes WHERE status = 'Aprovado' ORDER BY data_aprovacao DESC LIMIT 10")
                             aprovados = cur.fetchall()
-                            
                     for ap in aprovados:
                         c_txt, c_dl = st.columns([3, 1])
                         c_txt.write(f"#{ap['id']} - {ap['tipo']} (Aprov: {ajustar_fuso_br(ap['data_aprovacao']).strftime('%d/%m %H:%M')})")
@@ -636,7 +756,10 @@ else:
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT m.id as "ID", m.tipo as "Tipo", m.status as "Status", m.solicitante_email as "Solicitante", m.aprovador_email as "Aprovador", m.retirante_nome as "Colaborador", m.cc_destino as "CC", mi.codigo_item as "Código", mi.descricao as "Descrição", mi.quantidade as "Qtd", m.data_solicitacao as "Data Pedido", m.data_aprovacao as "Data Aprovação"
+                        SELECT m.id as "ID", m.tipo as "Tipo", m.status as "Status", m.solicitante_email as "Solicitante",
+                               m.aprovador_email as "Aprovador", m.retirante_nome as "Colaborador", m.cc_destino as "CC",
+                               mi.codigo_item as "Código", mi.descricao as "Descrição", mi.quantidade as "Qtd",
+                               m.data_solicitacao as "Data Pedido", m.data_aprovacao as "Data Aprovação"
                         FROM movimentacoes m LEFT JOIN movimentacoes_itens mi ON m.id = mi.movimentacao_id ORDER BY m.id DESC
                     """)
                     logs = cur.fetchall()
@@ -662,13 +785,12 @@ else:
                     df_massa['Quantidade'] = pd.to_numeric(df_massa['Quantidade'], errors='coerce')
                     df_massa = df_massa.dropna(subset=['Quantidade'])
                     df_massa['Quantidade'] = df_massa['Quantidade'].astype(int)
-                    
                     erros_massa = []
                     for idx, row in df_massa.iterrows():
                         if row['Tipo'] not in ('RDM', 'CGM'): erros_massa.append(f"L{idx+2}: Tipo '{row['Tipo']}' inválido.")
-                        if row['CC'] not in lista_cc: erros_massa.append(f"L{idx+2}: CC '{row['CC']}' inválido.")
-                        if row['Colaborador'] not in lista_colabs: erros_massa.append(f"L{idx+2}: Colab '{row['Colaborador']}' não cadastrado.")
-
+                        # ── MELHORIA 2: validar CC e colaborador na carga em massa ──
+                        if row['CC'] not in lista_cc: erros_massa.append(f"L{idx+2}: CC '{row['CC']}' não está cadastrado.")
+                        if row['Colaborador'] not in lista_colabs: erros_massa.append(f"L{idx+2}: Colab '{row['Colaborador']}' não está cadastrado.")
                     if erros_massa:
                         st.error("Corrija antes de importar:")
                         for e in erros_massa[:10]: st.write(e)
@@ -698,9 +820,22 @@ else:
                     c1, c2 = st.columns(2)
                     cod, desc_input = c1.text_input("Código:"), c2.text_input("Descrição:")
                     c3, c4, c5 = st.columns([2, 2, 1])
-                    cc_sel, op, qtd = c3.selectbox("CC:", lista_cc), c4.selectbox("Operação:", ["Entrada", "Saída"]), c5.number_input("Qtd:", min_value=1, step=1)
+                    cc_sel = c3.selectbox("CC:", lista_cc)
+                    # ── MELHORIA 1: opção "Excluir Código" adicionada ──
+                    op = c4.selectbox("Operação:", ["Entrada", "Saída", "Excluir Código"])
+                    qtd = c5.number_input("Qtd:", min_value=1, step=1)
                     if st.form_submit_button("✅ Confirmar"):
-                        if not cod: st.error("Informe o Código.")
+                        if not cod:
+                            st.error("Informe o Código.")
+                        elif op == "Excluir Código":
+                            # ── MELHORIA 1: cria CGMs automáticas antes de excluir ──
+                            n_dev = zerar_carga_por_codigo(cod, user['email'])
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute('DELETE FROM estoque WHERE "Codigo"=%s', (cod,))
+                            msg_dev = f" {n_dev} devolução(ões) automática(s) criada(s) para colaboradores com carga pendente." if n_dev > 0 else ""
+                            st.success(f"✅ Código **{cod}** excluído.{msg_dev}")
+                            st.cache_data.clear()
                         else:
                             de = buscar_descricao_por_codigo(cod)
                             if not de and not desc_input: st.error("Descrição obrigatória p/ item novo.")
@@ -823,7 +958,6 @@ else:
                         cur.execute("SELECT id, email, nome, nivel, cc_permitido FROM usuarios")
                         lista_u = cur.fetchall()
                 a_u = st.radio("Ação:", ["➕ Criar Novo", "✏️ Editar", "🗑️ Excluir"], horizontal=True)
-                
                 if a_u == "➕ Criar Novo":
                     if st.button("🛠️ Corrigir Seq IDs"):
                         with get_conn() as conn:
@@ -831,7 +965,10 @@ else:
                         st.success("✅ Seq corrigida!")
                     with st.form("fu"):
                         u1, u2 = st.columns(2); e, s = u1.text_input("E-mail:"), u2.text_input("Senha:", type="password")
-                        u3, u4 = st.columns(2); n = u3.selectbox("Nível:", ["Leitor", "Gestor", "Almoxarife", "Master"]); c = u4.multiselect("CCs:", ["Todos"] + lista_cc, default=["Todos"])
+                        u3, u4 = st.columns(2)
+                        # ── MELHORIA 4: NIVEIS_USUARIO sem Gestor ──
+                        n = u3.selectbox("Nível:", NIVEIS_USUARIO)
+                        c = u4.multiselect("CCs:", ["Todos"] + lista_cc, default=["Todos"])
                         if st.form_submit_button("Criar") and e and s:
                             try:
                                 with get_conn() as conn:
@@ -844,7 +981,9 @@ else:
                         ud = next(u for u in lista_u if u['email'] == se)
                         with st.form("feu"):
                             st.write(f"Editando: **{ud['nome']}**")
-                            nn = st.selectbox("Nível:", ["Leitor", "Gestor", "Almoxarife", "Master"], index=["Leitor", "Gestor", "Almoxarife", "Master"].index(ud['nivel']) if ud['nivel'] in ["Leitor", "Gestor", "Almoxarife", "Master"] else 0)
+                            # ── MELHORIA 4: migração automática Gestor→Almoxarife na edição ──
+                            nivel_atual = ud['nivel'] if ud['nivel'] in NIVEIS_USUARIO else 'Almoxarife'
+                            nn = st.selectbox("Nível:", NIVEIS_USUARIO, index=NIVEIS_USUARIO.index(nivel_atual))
                             cca = [cx for cx in ud['cc_permitido'].split('|') if cx in ["Todos"] + lista_cc] or ["Todos"]
                             nc = st.multiselect("CCs:", ["Todos"] + lista_cc, default=cca)
                             if st.form_submit_button("Salvar"):
@@ -930,9 +1069,11 @@ else:
                         with get_conn() as conn:
                             with conn.cursor() as cur:
                                 cur.execute("""
-                                    SELECT m.retirante_nome, m.cc_destino, mi.codigo_item, mi.descricao, SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE -mi.quantidade END) AS saldo
+                                    SELECT m.retirante_nome, m.cc_destino, mi.codigo_item, mi.descricao,
+                                        SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE -mi.quantidade END) AS saldo
                                     FROM movimentacoes_itens mi JOIN movimentacoes m ON m.id = mi.movimentacao_id WHERE m.status = 'Aprovado'
-                                    GROUP BY m.retirante_nome, m.cc_destino, mi.codigo_item, mi.descricao HAVING SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE -mi.quantidade END) > 0
+                                    GROUP BY m.retirante_nome, m.cc_destino, mi.codigo_item, mi.descricao
+                                    HAVING SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE -mi.quantidade END) > 0
                                 """)
                                 pends = cur.fetchall()
                                 c_d = 0
@@ -943,14 +1084,12 @@ else:
                                     cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (p['saldo'], p['codigo_item'], p['cc_destino']))
                                     c_d += 1
                         st.success(f"{c_d} Devoluções automáticas criadas."); st.cache_data.clear(); st.rerun()
-                    
                     st.write("**Limpar Tabelas Físicas**")
                     oe = st.radio("Estoque:", ["Zerar qtds", "Apagar tudo"])
                     if aprovar_acao_master("l_e", f"Limpar Estoque ({oe})"):
                         with get_conn() as conn:
                             with conn.cursor() as cur: cur.execute('UPDATE estoque SET "Quantidade"=0' if "Zerar" in oe else "DELETE FROM estoque")
                         st.success("Estoque limpo!"); st.cache_data.clear(); st.rerun()
-
                 with c2:
                     st.write("**Limpar Tabelas Secundárias**")
                     ot = st.radio("Telefonia:", ["Inativar", "Apagar tudo"])
@@ -958,9 +1097,11 @@ else:
                         with get_conn() as conn:
                             with conn.cursor() as cur: cur.execute("UPDATE telefonia SET \"Status\"='Inativo'" if "Inativar" in ot else "DELETE FROM telefonia")
                         st.success("Telefonia limpa!"); st.cache_data.clear(); st.rerun()
-                        
                     ce = st.text_input("Apagar Cód. Específico (Estoque):")
                     if ce and aprovar_acao_master("d_c", f"Apagar {ce}"):
+                        # ── MELHORIA 1: zerar carga antes de apagar código específico ──
+                        n_dev = zerar_carga_por_codigo(ce, user['email'])
                         with get_conn() as conn:
                             with conn.cursor() as cur: cur.execute('DELETE FROM estoque WHERE "Codigo"=%s', (ce,))
-                        st.success("Apagado!"); st.cache_data.clear(); st.rerun()
+                        msg_extra = f" {n_dev} devolução(ões) automática(s) criada(s)." if n_dev > 0 else ""
+                        st.success(f"Apagado!{msg_extra}"); st.cache_data.clear(); st.rerun()
