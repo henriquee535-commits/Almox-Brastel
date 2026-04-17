@@ -116,7 +116,7 @@ def init_db():
             c.execute("SELECT count(*) as total FROM usuarios")
             if c.fetchone()['total'] == 0:
                 c.execute("INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s, %s, %s, %s, %s)",
-                          ('master@brastelnet.com.br', SENHA_ZERAR_ESTOQUE, 'Administrador', 'Master', 'Todos'))
+                          ('eduardo.sousa@brastelnet.com.br', SENHA_ZERAR_ESTOQUE, 'Administrador', 'Master', 'Todos'))
 
     # ── MELHORIA 4: migração — Gestor → Almoxarife + atualizar constraint ──
     try:
