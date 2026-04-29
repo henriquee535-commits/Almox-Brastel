@@ -49,6 +49,25 @@ html, body, [class*="css"] { font-family: 'Sora', sans-serif; }
 }
 .stButton > button:hover { opacity: 0.88; }
 .req-detalhe-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 18px; margin: 8px 0; font-size: 0.93rem; }
+
+/* ── Cards de Limpeza ── */
+.limpeza-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    transition: box-shadow 0.2s;
+}
+.limpeza-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.10); }
+.limpeza-card-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 4px; }
+.limpeza-card-desc { font-size: 0.87rem; color: #64748b; margin-bottom: 12px; }
+.limpeza-section-header {
+    font-size: 1.1rem; font-weight: 700; color: #1a3a4a;
+    border-left: 4px solid #0d5c8a; padding-left: 10px;
+    margin: 22px 0 12px 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,8 +89,16 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         with conn.cursor() as c:
-            # ── ALTERADO: coluna Patrimonio adicionada na criação da tabela ──
-            c.execute('CREATE TABLE IF NOT EXISTS estoque (id SERIAL PRIMARY KEY, "Codigo" TEXT, "Descricao" TEXT, "Quantidade" INTEGER, "CC" TEXT, "Patrimonio" BOOLEAN DEFAULT FALSE)')
+            # ── Plaquinha adicionada na criação da tabela ──
+            c.execute('''CREATE TABLE IF NOT EXISTS estoque (
+                id SERIAL PRIMARY KEY,
+                "Codigo" TEXT,
+                "Descricao" TEXT,
+                "Quantidade" INTEGER,
+                "CC" TEXT,
+                "Patrimonio" BOOLEAN DEFAULT FALSE,
+                "Plaquinha" TEXT DEFAULT NULL
+            )''')
             c.execute('CREATE TABLE IF NOT EXISTS acessos (sessao_id TEXT PRIMARY KEY, ultimo_clique TIMESTAMP)')
             c.execute('CREATE TABLE IF NOT EXISTS centros_custo (nome TEXT PRIMARY KEY)')
             c.execute('CREATE TABLE IF NOT EXISTS colaboradores (nome TEXT PRIMARY KEY)')
@@ -125,11 +152,19 @@ def init_db():
     except Exception:
         pass
 
-    # ── NOVO: Migração — adicionar coluna Patrimonio em bancos já existentes ──
+    # Migração: adicionar coluna Patrimonio
     try:
         with get_conn() as conn:
             with conn.cursor() as c:
                 c.execute('ALTER TABLE estoque ADD COLUMN IF NOT EXISTS "Patrimonio" BOOLEAN DEFAULT FALSE')
+    except Exception:
+        pass
+
+    # ── NOVO: Migração — adicionar coluna Plaquinha ──
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as c:
+                c.execute('ALTER TABLE estoque ADD COLUMN IF NOT EXISTS "Plaquinha" TEXT DEFAULT NULL')
     except Exception:
         pass
 
@@ -278,13 +313,13 @@ def marcar_notificacoes_lidas(email: str):
 def carregar_estoque():
     with get_conn() as conn:
         with conn.cursor() as c:
-            # ── ALTERADO: incluir Patrimonio no SELECT ──
-            c.execute('SELECT "Codigo", "Descricao", "Quantidade", "CC", "Patrimonio" FROM estoque')
-            df = pd.DataFrame(c.fetchall(), columns=['Codigo', 'Descricao', 'Quantidade', 'CC', 'Patrimonio'])
+            c.execute('SELECT "Codigo", "Descricao", "Quantidade", "CC", "Patrimonio", "Plaquinha" FROM estoque')
+            df = pd.DataFrame(c.fetchall(), columns=['Codigo', 'Descricao', 'Quantidade', 'CC', 'Patrimonio', 'Plaquinha'])
     if not df.empty:
         df['Quantidade'] = pd.to_numeric(df['Quantidade'], downcast='integer')
         df['CC'] = df['CC'].astype('category')
         df['Patrimonio'] = df['Patrimonio'].fillna(False).astype(bool)
+        df['Plaquinha'] = df['Plaquinha'].fillna('')
     return df
 
 @st.cache_data(ttl=120, max_entries=2)
@@ -318,6 +353,13 @@ def buscar_descricao_por_codigo(cod):
             c.execute('SELECT DISTINCT "Descricao" FROM estoque WHERE "Codigo" = %s', (cod,))
             res = c.fetchone()
             return res['Descricao'] if res else None
+
+def plaquinha_ja_existe(plaquinha: str) -> bool:
+    """Verifica se uma plaquinha já está cadastrada no estoque."""
+    with get_conn() as conn:
+        with conn.cursor() as c:
+            c.execute('SELECT id FROM estoque WHERE "Plaquinha" = %s', (plaquinha.strip(),))
+            return c.fetchone() is not None
 
 def carregar_itens_movimentacao(mov_id: int):
     with get_conn() as conn:
@@ -365,7 +407,6 @@ def gerar_html_comprovante(req_id):
     <div class="signatures"><div class="sig-line">Almoxarife</div><div class="sig-line">Assinatura de {req['retirante_nome']}</div></div></body></html>
     """
 
-# ── ALTERADO: template xlsx agora inclui coluna Patrimonio ──
 def gerar_template_xlsx():
     buf = io.BytesIO()
     pd.DataFrame({
@@ -373,7 +414,8 @@ def gerar_template_xlsx():
         'Descricao': ['Parafuso'],
         'Quantidade': [100],
         'CC': ['01/0001'],
-        'Patrimonio': [False]
+        'Patrimonio': [False],
+        'Plaquinha': ['']
     }).to_excel(buf, index=False, engine='openpyxl')
     return buf.getvalue()
 
@@ -392,9 +434,6 @@ def gerar_template_carga_massa():
     pd.DataFrame({'Tipo': ['RDM', 'CGM'], 'CC': ['01/0001', '01/0002'], 'Colaborador': ['JOÃO DA SILVA', 'MARIA SOUZA'], 'Codigo_Item': ['ABC123', 'DEF456'], 'Quantidade': [2, 1]}).to_excel(buf, index=False, engine='openpyxl')
     return buf.getvalue()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MELHORIA 1: Zerar carga de colaboradores ao excluir um código do estoque
-# ══════════════════════════════════════════════════════════════════════════════
 def zerar_carga_por_codigo(codigo: str, aprovador_email: str) -> int:
     devolvidos = 0
     with get_conn() as conn:
@@ -473,20 +512,17 @@ if menu == "📊 Consulta":
     col1.metric("Total de Peças em Estoque", f"{df_ativos['Quantidade'].sum():.0f}")
     col2.metric("Itens Únicos Diferentes", df_ativos['Codigo'].nunique())
     col3.metric("Centros de Custo Ativos", df_ativos['CC'].nunique())
-    # ── NOVO: métrica de patrimônios ──
     col4.metric("Itens Patrimônio", int(df_ativos['Patrimonio'].sum()) if 'Patrimonio' in df_ativos.columns else 0)
     st.divider()
 
-    # ── ALTERADO: 3 colunas de filtro, incluindo filtro de Patrimônio ──
     c_b, c_f, c_p = st.columns([2, 1, 1])
-    busca = c_b.text_input("🔍 Pesquisar Código ou Descrição:")
+    busca = c_b.text_input("🔍 Pesquisar Código, Descrição ou Plaquinha:")
     cc_filtro = c_f.selectbox("🏢 Filtrar por Centro de Custo:", ["Todos"] + lista_cc)
     patrim_filtro = c_p.selectbox("🏷️ Patrimônio:", ["Todos", "Somente Patrimônios", "Excluir Patrimônios"])
 
     df_filt = df_ativos.copy()
     if cc_filtro != "Todos":
         df_filt = df_filt[df_filt['CC'] == cc_filtro]
-    # ── NOVO: aplica filtro de patrimônio ──
     if patrim_filtro == "Somente Patrimônios":
         df_filt = df_filt[df_filt['Patrimonio'] == True]
     elif patrim_filtro == "Excluir Patrimônios":
@@ -494,7 +530,8 @@ if menu == "📊 Consulta":
     if busca:
         df_filt = df_filt[
             df_filt['Codigo'].astype(str).str.contains(busca, case=False) |
-            df_filt['Descricao'].str.contains(busca, case=False, na=False)
+            df_filt['Descricao'].str.contains(busca, case=False, na=False) |
+            df_filt['Plaquinha'].astype(str).str.contains(busca, case=False, na=False)
         ]
 
     if not df_filt.empty:
@@ -828,21 +865,38 @@ else:
                                                 else: cur.execute('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)', (ir['Codigo_Item'], di, ir['Quantidade'], cc_g))
                             st.success("✅ Importação concluída!"); st.cache_data.clear(); st.rerun()
 
+        # ══════════════════════════════════════════════════════════════════════
+        # MÓDULO: GESTÃO DE ESTOQUE — com suporte a Patrimônio + Plaquinha
+        # ══════════════════════════════════════════════════════════════════════
         elif modulo_ativo == "📦 Gestão de Estoque":
             tabs_est = st.tabs(["📝 Manual", "📤 Carga Excel"])
             with tabs_est[0]:
                 with st.form("registro", clear_on_submit=True):
                     c1, c2 = st.columns(2)
-                    cod, desc_input = c1.text_input("Código:"), c2.text_input("Descrição:")
+                    cod = c1.text_input("Código:")
+                    desc_input = c2.text_input("Descrição:")
                     c3, c4, c5 = st.columns([2, 2, 1])
                     cc_sel = c3.selectbox("CC:", lista_cc)
                     op = c4.selectbox("Operação:", ["Entrada", "Saída", "Excluir Código"])
                     qtd = c5.number_input("Qtd:", min_value=1, step=1)
-                    # ── NOVO: checkbox de patrimônio ──
+
+                    # ── Patrimônio: checkbox + campo plaquinha condicional ──
                     is_patrimonio = st.checkbox(
                         "🏷️ É Patrimônio?",
-                        help="Marque se este item é um bem patrimonial (equipamento, mobiliário, etc.)"
+                        help="Marque se este item é um bem patrimonial. Cada plaquinha será uma unidade única no estoque."
                     )
+
+                    plaquinha_input = ""
+                    if is_patrimonio and op != "Excluir Código":
+                        st.info("🏷️ **Item de Patrimônio** — cada plaquinha corresponde a 1 unidade única no estoque.")
+                        plaquinha_input = st.text_input(
+                            "Número da Plaquinha / Tombamento: *",
+                            placeholder="Ex: PAT-00123",
+                            help="Identificador único gravado na plaquinha física do bem patrimonial."
+                        )
+                        # Forçar quantidade = 1 para patrimônio
+                        st.caption("ℹ️ Itens de patrimônio têm quantidade fixada em **1** por plaquinha.")
+
                     if st.form_submit_button("✅ Confirmar"):
                         if not cod:
                             st.error("Informe o Código.")
@@ -854,69 +908,119 @@ else:
                             msg_dev = f" {n_dev} devolução(ões) automática(s) criada(s) para colaboradores com carga pendente." if n_dev > 0 else ""
                             st.success(f"✅ Código **{cod}** excluído.{msg_dev}")
                             st.cache_data.clear()
+                        elif is_patrimonio and op == "Entrada":
+                            # ── Validação: plaquinha obrigatória ──
+                            if not plaquinha_input.strip():
+                                st.error("⛔ A Plaquinha/Tombamento é **obrigatória** para itens de patrimônio.")
+                            elif plaquinha_ja_existe(plaquinha_input.strip()):
+                                st.error(f"⛔ A plaquinha **{plaquinha_input.strip()}** já está cadastrada no estoque. Cada plaquinha deve ser única.")
+                            else:
+                                de = buscar_descricao_por_codigo(cod)
+                                if not de and not desc_input:
+                                    st.error("Descrição obrigatória para item novo.")
+                                else:
+                                    # Patrimônio: sempre insere nova linha com Quantidade=1
+                                    with get_conn() as conn:
+                                        with conn.cursor() as cur:
+                                            cur.execute(
+                                                'INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC","Patrimonio","Plaquinha") VALUES (%s,%s,%s,%s,%s,%s)',
+                                                (cod, de or desc_input, 1, cc_sel, True, plaquinha_input.strip())
+                                            )
+                                    st.success(f"✅ Patrimônio cadastrado! Plaquinha: **{plaquinha_input.strip()}**")
+                                    st.cache_data.clear()
                         else:
+                            # Fluxo normal (não-patrimônio ou saída)
                             de = buscar_descricao_por_codigo(cod)
                             if not de and not desc_input: st.error("Descrição obrigatória p/ item novo.")
                             else:
                                 with get_conn() as conn:
                                     with conn.cursor() as cur:
-                                        cur.execute('SELECT "Quantidade" FROM estoque WHERE "Codigo"=%s AND "CC"=%s', (cod, cc_sel))
+                                        cur.execute('SELECT "Quantidade" FROM estoque WHERE "Codigo"=%s AND "CC"=%s AND ("Patrimonio" IS FALSE OR "Patrimonio" IS NULL)', (cod, cc_sel))
                                         res = cur.fetchone()
                                         if res:
                                             if op == "Saída":
                                                 if res['Quantidade'] < qtd: st.error("FALTA DE ESTOQUE!")
                                                 else:
-                                                    cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, cod, cc_sel))
+                                                    cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s AND ("Patrimonio" IS FALSE OR "Patrimonio" IS NULL)', (qtd, cod, cc_sel))
                                                     st.success("Saída registrada!")
                                             else:
-                                                # ── ALTERADO: Entrada também atualiza flag Patrimonio ──
-                                                cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s, "Patrimonio" = %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, is_patrimonio, cod, cc_sel))
+                                                cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s AND ("Patrimonio" IS FALSE OR "Patrimonio" IS NULL)', (qtd, cod, cc_sel))
                                                 st.success("Entrada registrada!")
                                         else:
                                             if op == "Saída": st.error("ITEM NÃO ENCONTRADO.")
                                             else:
-                                                # ── ALTERADO: INSERT inclui Patrimonio ──
-                                                cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC", "Patrimonio") VALUES (%s, %s, %s, %s, %s)', (cod, de or desc_input, qtd, cc_sel, is_patrimonio))
+                                                cur.execute('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC","Patrimonio") VALUES (%s,%s,%s,%s,%s)', (cod, de or desc_input, qtd, cc_sel, False))
                                                 st.success("Cadastrado!")
                                 st.cache_data.clear()
+
             with tabs_est[1]:
                 st.download_button("⬇️ Template", gerar_template_xlsx(), "template.xlsx")
-                st.caption("ℹ️ A coluna **Patrimonio** aceita `TRUE`/`FALSE` ou `1`/`0`. Deixe em branco para não-patrimônio.")
+                st.caption("ℹ️ A coluna **Patrimonio** aceita `TRUE`/`FALSE`. A coluna **Plaquinha** é obrigatória quando Patrimônio=TRUE e deve ser única.")
                 arquivo = st.file_uploader("Arquivo (.xlsx):", type=["xlsx"])
                 if arquivo and st.button("🚀 Processar Importação"):
                     df_u = pd.read_excel(arquivo, engine='openpyxl')
                     if {'Codigo', 'Descricao', 'Quantidade', 'CC'} - set(df_u.columns): st.error("Colunas inválidas.")
                     else:
-                        df_u['Codigo'], df_u['CC'] = df_u['Codigo'].astype(str).str.strip(), df_u['CC'].astype(str).str.strip()
+                        df_u['Codigo'] = df_u['Codigo'].astype(str).str.strip()
+                        df_u['CC'] = df_u['CC'].astype(str).str.strip()
                         df_u['Quantidade'] = pd.to_numeric(df_u['Quantidade'], errors='coerce')
                         df_u = df_u.dropna(subset=['Quantidade'])
-                        # ── NOVO: lê coluna Patrimonio se existir, senão assume False ──
                         if 'Patrimonio' in df_u.columns:
                             df_u['Patrimonio'] = df_u['Patrimonio'].fillna(False).astype(bool)
                         else:
                             df_u['Patrimonio'] = False
-                        inv_ccs = set(df_u['CC'].unique()) - set(lista_cc)
-                        if inv_ccs: st.error(f"CCs não encontrados: {', '.join(inv_ccs)}")
+                        if 'Plaquinha' in df_u.columns:
+                            df_u['Plaquinha'] = df_u['Plaquinha'].fillna('').astype(str).str.strip()
                         else:
-                            with get_conn() as conn:
-                                with conn.cursor() as cur:
-                                    cur.execute('SELECT "Codigo", "CC" FROM estoque')
-                                    db_set = set((r['Codigo'], r['CC']) for r in cur.fetchall())
-                                    ins, upd = [], []
-                                    for _, row in df_u.iterrows():
-                                        pat_val = bool(row.get('Patrimonio', False))
-                                        if (row['Codigo'], row['CC']) in db_set:
-                                            # ── ALTERADO: upd inclui Patrimonio ──
-                                            upd.append((row['Quantidade'], pat_val, row['Codigo'], row['CC']))
+                            df_u['Plaquinha'] = ''
+
+                        # Validação: patrimônio sem plaquinha ou plaquinha duplicada na planilha
+                        erros_xlsx = []
+                        plaquinhas_na_planilha = set()
+                        for idx, row in df_u.iterrows():
+                            if row.get('Patrimonio', False):
+                                plq = str(row.get('Plaquinha', '')).strip()
+                                if not plq:
+                                    erros_xlsx.append(f"L{idx+2}: Item patrimônio sem Plaquinha preenchida.")
+                                elif plq in plaquinhas_na_planilha:
+                                    erros_xlsx.append(f"L{idx+2}: Plaquinha **{plq}** duplicada na planilha.")
+                                else:
+                                    plaquinhas_na_planilha.add(plq)
+                        if erros_xlsx:
+                            st.error("Corrija os erros antes de importar:")
+                            for e in erros_xlsx[:10]: st.write(e)
+                        else:
+                            inv_ccs = set(df_u['CC'].unique()) - set(lista_cc)
+                            if inv_ccs: st.error(f"CCs não encontrados: {', '.join(inv_ccs)}")
+                            else:
+                                with get_conn() as conn:
+                                    with conn.cursor() as cur:
+                                        # Verificar plaquinhas já existentes no banco
+                                        cur.execute('SELECT "Plaquinha" FROM estoque WHERE "Plaquinha" IS NOT NULL AND "Plaquinha" != \'\'')
+                                        plaquinhas_db = set(r['Plaquinha'] for r in cur.fetchall())
+                                        conflitos = plaquinhas_na_planilha & plaquinhas_db
+                                        if conflitos:
+                                            st.error(f"Plaquinhas já existem no banco: {', '.join(conflitos)}")
                                         else:
-                                            # ── ALTERADO: ins inclui Patrimonio ──
-                                            ins.append((row['Codigo'], row['Descricao'], row['Quantidade'], row['CC'], pat_val))
-                                            db_set.add((row['Codigo'], row['CC']))
-                                    if ins:
-                                        cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC","Patrimonio") VALUES (%s,%s,%s,%s,%s)', ins)
-                                    if upd:
-                                        cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s, "Patrimonio" = %s WHERE "Codigo"=%s AND "CC"=%s', upd)
-                            st.success("Importação concluída!"); st.cache_data.clear(); st.rerun()
+                                            cur.execute('SELECT "Codigo", "CC" FROM estoque WHERE "Patrimonio" IS FALSE OR "Patrimonio" IS NULL')
+                                            db_set = set((r['Codigo'], r['CC']) for r in cur.fetchall())
+                                            ins, upd = [], []
+                                            for _, row in df_u.iterrows():
+                                                pat_val = bool(row.get('Patrimonio', False))
+                                                plq_val = str(row.get('Plaquinha', '')).strip() or None
+                                                if pat_val:
+                                                    # Patrimônio: sempre nova linha com Qtd=1
+                                                    ins.append((row['Codigo'], row['Descricao'], 1, row['CC'], True, plq_val))
+                                                elif (row['Codigo'], row['CC']) in db_set:
+                                                    upd.append((row['Quantidade'], row['Codigo'], row['CC']))
+                                                else:
+                                                    ins.append((row['Codigo'], row['Descricao'], row['Quantidade'], row['CC'], False, None))
+                                                    db_set.add((row['Codigo'], row['CC']))
+                                            if ins:
+                                                cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC","Patrimonio","Plaquinha") VALUES (%s,%s,%s,%s,%s,%s)', ins)
+                                            if upd:
+                                                cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', upd)
+                                st.success("Importação concluída!"); st.cache_data.clear(); st.rerun()
 
         elif modulo_ativo == "📱 Telefonia":
             tabs_tel = st.tabs(["📱 Individual", "📤 Em Massa"])
@@ -989,6 +1093,9 @@ else:
                             if u_t: cur.executemany('UPDATE telefonia SET "Conta"=%s,"Operadora"=%s,"Colaborador"=%s,"CC"=%s,"Status"=%s,"Gestor"=%s WHERE "Numero"=%s', u_t)
                     st.success("Importação concluída!"); st.cache_data.clear(); st.rerun()
 
+        # ══════════════════════════════════════════════════════════════════════
+        # MÓDULO: ADMINISTRAÇÃO
+        # ══════════════════════════════════════════════════════════════════════
         elif modulo_ativo == "⚙️ Administração":
             tabs_admin = st.tabs(["👥 Usuários", "🏢 CCs", "👷 Colab", "🗑️ Limpeza (PIN)"])
 
@@ -1098,11 +1205,63 @@ else:
                                 with conn.cursor() as cur: cur.execute("DELETE FROM colaboradores WHERE nome = %s", (dc,))
                             st.success("Excluído!"); st.cache_data.clear(); st.rerun()
 
+            # ══════════════════════════════════════════════════════════════════
+            # ABA LIMPEZA — Redesenhada com cards visuais + limpeza de usuários
+            # ══════════════════════════════════════════════════════════════════
             with tabs_admin[3]:
-                st.subheader("⚠️ Limpeza (Requer PIN)")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.write("**Zerar Carga (Criar Devolução Automática)**")
+                st.subheader("🗑️ Central de Limpeza")
+                st.caption("Todas as ações abaixo requerem autenticação via PIN. Use com cautela — operações são irreversíveis.")
+
+                # ── SEÇÃO 1: ESTOQUE ──────────────────────────────────────────
+                st.markdown('<div class="limpeza-section-header">📦 Estoque</div>', unsafe_allow_html=True)
+                col_e1, col_e2, col_e3 = st.columns(3)
+
+                with col_e1:
+                    st.markdown("""
+                    <div class="limpeza-card">
+                        <div class="limpeza-card-title">🔄 Zerar Quantidades</div>
+                        <div class="limpeza-card-desc">Mantém todos os itens cadastrados, mas zera as quantidades para 0.</div>
+                    </div>""", unsafe_allow_html=True)
+                    if aprovar_acao_master("l_e_zerar", "Zerar Quantidades do Estoque"):
+                        with get_conn() as conn:
+                            with conn.cursor() as cur: cur.execute('UPDATE estoque SET "Quantidade"=0')
+                        st.success("✅ Quantidades zeradas!"); st.cache_data.clear(); st.rerun()
+
+                with col_e2:
+                    st.markdown("""
+                    <div class="limpeza-card">
+                        <div class="limpeza-card-title">🗑️ Apagar Todo o Estoque</div>
+                        <div class="limpeza-card-desc">Remove permanentemente todos os registros da tabela de estoque.</div>
+                    </div>""", unsafe_allow_html=True)
+                    if aprovar_acao_master("l_e_apagar", "Apagar Todo o Estoque"):
+                        with get_conn() as conn:
+                            with conn.cursor() as cur: cur.execute("DELETE FROM estoque")
+                        st.success("✅ Estoque apagado!"); st.cache_data.clear(); st.rerun()
+
+                with col_e3:
+                    st.markdown("""
+                    <div class="limpeza-card">
+                        <div class="limpeza-card-title">🔍 Apagar Código Específico</div>
+                        <div class="limpeza-card-desc">Remove todas as linhas de um código e cria devoluções automáticas para colaboradores com carga pendente.</div>
+                    </div>""", unsafe_allow_html=True)
+                    ce = st.text_input("Código a apagar:", key="ce_especifico")
+                    if ce and aprovar_acao_master("d_c_esp", f"Apagar código {ce}"):
+                        n_dev = zerar_carga_por_codigo(ce, user['email'])
+                        with get_conn() as conn:
+                            with conn.cursor() as cur: cur.execute('DELETE FROM estoque WHERE "Codigo"=%s', (ce,))
+                        msg_extra = f" {n_dev} devolução(ões) automática(s) criada(s)." if n_dev > 0 else ""
+                        st.success(f"✅ Código **{ce}** apagado.{msg_extra}"); st.cache_data.clear(); st.rerun()
+
+                # ── SEÇÃO 2: MOVIMENTAÇÕES ────────────────────────────────────
+                st.markdown('<div class="limpeza-section-header">📋 Movimentações e Cargas</div>', unsafe_allow_html=True)
+                col_m1, col_m2 = st.columns(2)
+
+                with col_m1:
+                    st.markdown("""
+                    <div class="limpeza-card">
+                        <div class="limpeza-card-title">📤 Zerar Carga de Todos os Colaboradores</div>
+                        <div class="limpeza-card-desc">Cria CGMs automáticas para devolver todos os materiais que estão em posse de colaboradores e retorna os itens ao estoque.</div>
+                    </div>""", unsafe_allow_html=True)
                     if aprovar_acao_master("zc_all", "Zerar Carga de Todos"):
                         with get_conn() as conn:
                             with conn.cursor() as cur:
@@ -1121,24 +1280,108 @@ else:
                                     cur.execute('INSERT INTO movimentacoes_itens (movimentacao_id, codigo_item, quantidade, descricao) VALUES (%s, %s, %s, %s)', (cid, p['codigo_item'], p['saldo'], p['descricao']))
                                     cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (p['saldo'], p['codigo_item'], p['cc_destino']))
                                     c_d += 1
-                        st.success(f"{c_d} Devoluções automáticas criadas."); st.cache_data.clear(); st.rerun()
-                    st.write("**Limpar Tabelas Físicas**")
-                    oe = st.radio("Estoque:", ["Zerar qtds", "Apagar tudo"])
-                    if aprovar_acao_master("l_e", f"Limpar Estoque ({oe})"):
+                        st.success(f"✅ {c_d} devolução(ões) automática(s) criada(s)."); st.cache_data.clear(); st.rerun()
+
+                with col_m2:
+                    st.markdown("""
+                    <div class="limpeza-card">
+                        <div class="limpeza-card-title">🧹 Zerar Carga de Colaborador Específico</div>
+                        <div class="limpeza-card-desc">Cria CGMs automáticas apenas para um colaborador selecionado, devolvendo seus materiais ao estoque.</div>
+                    </div>""", unsafe_allow_html=True)
+                    colab_zerar = st.selectbox("Colaborador:", [""] + lista_colabs, key="colab_zerar_esp")
+                    if colab_zerar and aprovar_acao_master(f"zc_{colab_zerar}", f"Zerar carga de {colab_zerar}"):
                         with get_conn() as conn:
-                            with conn.cursor() as cur: cur.execute('UPDATE estoque SET "Quantidade"=0' if "Zerar" in oe else "DELETE FROM estoque")
-                        st.success("Estoque limpo!"); st.cache_data.clear(); st.rerun()
-                with c2:
-                    st.write("**Limpar Tabelas Secundárias**")
-                    ot = st.radio("Telefonia:", ["Inativar", "Apagar tudo"])
-                    if aprovar_acao_master("l_t", f"Limpar Tel ({ot})"):
+                            with conn.cursor() as cur:
+                                cur.execute("""
+                                    SELECT m.retirante_nome, m.cc_destino, mi.codigo_item, mi.descricao,
+                                        SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE -mi.quantidade END) AS saldo
+                                    FROM movimentacoes_itens mi JOIN movimentacoes m ON m.id = mi.movimentacao_id
+                                    WHERE m.status = 'Aprovado' AND m.retirante_nome = %s
+                                    GROUP BY m.retirante_nome, m.cc_destino, mi.codigo_item, mi.descricao
+                                    HAVING SUM(CASE WHEN m.tipo = 'RDM' THEN mi.quantidade ELSE -mi.quantidade END) > 0
+                                """, (colab_zerar,))
+                                pends = cur.fetchall()
+                                c_d = 0
+                                for p in pends:
+                                    cur.execute('''INSERT INTO movimentacoes (tipo, cc_destino, solicitante_email, retirante_nome, status, data_aprovacao, aprovador_email) VALUES ('CGM', %s, %s, %s, 'Aprovado', NOW(), %s) RETURNING id''', (p['cc_destino'], user['email'], p['retirante_nome'], user['email']))
+                                    cid = cur.fetchone()['id']
+                                    cur.execute('INSERT INTO movimentacoes_itens (movimentacao_id, codigo_item, quantidade, descricao) VALUES (%s, %s, %s, %s)', (cid, p['codigo_item'], p['saldo'], p['descricao']))
+                                    cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (p['saldo'], p['codigo_item'], p['cc_destino']))
+                                    c_d += 1
+                        st.success(f"✅ {c_d} devolução(ões) criada(s) para {colab_zerar}."); st.cache_data.clear(); st.rerun()
+
+                # ── SEÇÃO 3: TELEFONIA ────────────────────────────────────────
+                st.markdown('<div class="limpeza-section-header">📱 Telefonia</div>', unsafe_allow_html=True)
+                col_t1, col_t2 = st.columns(2)
+
+                with col_t1:
+                    st.markdown("""
+                    <div class="limpeza-card">
+                        <div class="limpeza-card-title">⏸️ Inativar Todas as Linhas</div>
+                        <div class="limpeza-card-desc">Marca todas as linhas telefônicas como Inativas, sem excluir os registros.</div>
+                    </div>""", unsafe_allow_html=True)
+                    if aprovar_acao_master("l_t_inativar", "Inativar Todas as Linhas"):
                         with get_conn() as conn:
-                            with conn.cursor() as cur: cur.execute("UPDATE telefonia SET \"Status\"='Inativo'" if "Inativar" in ot else "DELETE FROM telefonia")
-                        st.success("Telefonia limpa!"); st.cache_data.clear(); st.rerun()
-                    ce = st.text_input("Apagar Cód. Específico (Estoque):")
-                    if ce and aprovar_acao_master("d_c", f"Apagar {ce}"):
-                        n_dev = zerar_carga_por_codigo(ce, user['email'])
+                            with conn.cursor() as cur: cur.execute("UPDATE telefonia SET \"Status\"='Inativo'")
+                        st.success("✅ Linhas inativadas!"); st.cache_data.clear(); st.rerun()
+
+                with col_t2:
+                    st.markdown("""
+                    <div class="limpeza-card">
+                        <div class="limpeza-card-title">🗑️ Apagar Toda a Telefonia</div>
+                        <div class="limpeza-card-desc">Remove permanentemente todos os registros da tabela de telefonia.</div>
+                    </div>""", unsafe_allow_html=True)
+                    if aprovar_acao_master("l_t_apagar", "Apagar Toda a Telefonia"):
                         with get_conn() as conn:
-                            with conn.cursor() as cur: cur.execute('DELETE FROM estoque WHERE "Codigo"=%s', (ce,))
-                        msg_extra = f" {n_dev} devolução(ões) automática(s) criada(s)." if n_dev > 0 else ""
-                        st.success(f"Apagado!{msg_extra}"); st.cache_data.clear(); st.rerun()
+                            with conn.cursor() as cur: cur.execute("DELETE FROM telefonia")
+                        st.success("✅ Telefonia apagada!"); st.cache_data.clear(); st.rerun()
+
+                # ── SEÇÃO 4: USUÁRIOS / PERFIS ────────────────────────────────
+                st.markdown('<div class="limpeza-section-header">👥 Usuários e Perfis</div>', unsafe_allow_html=True)
+
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id, email, nome, nivel FROM usuarios WHERE email != %s ORDER BY nivel, nome", (user['email'],))
+                        todos_usuarios = cur.fetchall()
+
+                col_u1, col_u2 = st.columns(2)
+
+                with col_u1:
+                    st.markdown("""
+                    <div class="limpeza-card">
+                        <div class="limpeza-card-title">🗑️ Remover Usuários Selecionados</div>
+                        <div class="limpeza-card-desc">Selecione manualmente quais usuários devem ser removidos do sistema. O seu próprio usuário não pode ser excluído aqui.</div>
+                    </div>""", unsafe_allow_html=True)
+                    if todos_usuarios:
+                        opcoes_usuarios = {f"{u['nome']} ({u['email']}) — {u['nivel']}": u['email'] for u in todos_usuarios}
+                        selecionados = st.multiselect(
+                            "Selecione os usuários a remover:",
+                            list(opcoes_usuarios.keys()),
+                            key="multiselect_usuarios_limpeza"
+                        )
+                        if selecionados:
+                            emails_remover = [opcoes_usuarios[s] for s in selecionados]
+                            st.warning(f"⚠️ {len(emails_remover)} usuário(s) serão removidos permanentemente.")
+                            if aprovar_acao_master("del_usuarios_sel", f"Remover {len(emails_remover)} usuário(s)"):
+                                with get_conn() as conn:
+                                    with conn.cursor() as cur:
+                                        cur.executemany("DELETE FROM usuarios WHERE email=%s", [(e,) for e in emails_remover])
+                                st.success(f"✅ {len(emails_remover)} usuário(s) removido(s)."); st.rerun()
+                    else:
+                        st.info("Não há outros usuários cadastrados.")
+
+                with col_u2:
+                    st.markdown("""
+                    <div class="limpeza-card">
+                        <div class="limpeza-card-title">🔁 Resetar Senha em Massa</div>
+                        <div class="limpeza-card-desc">Redefine a senha de todos os usuários (exceto o seu) para uma senha padrão informada abaixo.</div>
+                    </div>""", unsafe_allow_html=True)
+                    nova_senha_massa = st.text_input("Nova senha padrão:", type="password", key="nova_senha_massa_limpeza")
+                    if nova_senha_massa and len(nova_senha_massa) >= 4:
+                        if aprovar_acao_master("reset_senhas", "Resetar Senhas em Massa"):
+                            with get_conn() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("UPDATE usuarios SET senha=%s WHERE email != %s", (nova_senha_massa, user['email']))
+                            st.success("✅ Senhas redefinidas para todos os usuários!"); st.rerun()
+                    elif nova_senha_massa:
+                        st.caption("⚠️ A senha deve ter pelo menos 4 caracteres.")
