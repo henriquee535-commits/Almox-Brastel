@@ -24,8 +24,6 @@ SENHA_ACESSO = st.secrets.get("SENHA_ACESSO", "123")
 SENHA_ZERAR_ESTOQUE = st.secrets.get("SENHA_ZERAR_ESTOQUE", "123")
 DATABASE_URL = st.secrets["DATABASE_URL"]
 
-# ── MELHORIA 3: CORREÇÃO SMTP ──
-# Lê do bloco [email] do secrets.toml: remetente, senha, destinatario
 EMAIL_USER = st.secrets.get("email", {}).get("remetente", st.secrets.get("EMAIL_USER", ""))
 EMAIL_PASS = st.secrets.get("email", {}).get("senha", st.secrets.get("EMAIL_PASS", ""))
 EMAIL_DEST = st.secrets.get("email", {}).get("destinatario", EMAIL_USER)
@@ -38,7 +36,6 @@ CONTAS_TELEFONIA = ["ENGIA", "BRASTEL", "ATTRON"]
 OPERADORAS_TELEFONIA = ["Claro", "Vivo", "TIM", "Oi", "Algar", "Nextel", "Outra"]
 STATUS_TELEFONIA = ["Ativo", "Inativo"]
 
-# ── MELHORIA 4: GESTOR REMOVIDO ── Níveis: Leitor, Almoxarife, Master
 NIVEIS_USUARIO = ["Leitor", "Almoxarife", "Master"]
 
 # --- CSS GLOBAL ---
@@ -73,12 +70,12 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         with conn.cursor() as c:
-            c.execute('CREATE TABLE IF NOT EXISTS estoque (id SERIAL PRIMARY KEY, "Codigo" TEXT, "Descricao" TEXT, "Quantidade" INTEGER, "CC" TEXT)')
+            # ── ALTERADO: coluna Patrimonio adicionada na criação da tabela ──
+            c.execute('CREATE TABLE IF NOT EXISTS estoque (id SERIAL PRIMARY KEY, "Codigo" TEXT, "Descricao" TEXT, "Quantidade" INTEGER, "CC" TEXT, "Patrimonio" BOOLEAN DEFAULT FALSE)')
             c.execute('CREATE TABLE IF NOT EXISTS acessos (sessao_id TEXT PRIMARY KEY, ultimo_clique TIMESTAMP)')
             c.execute('CREATE TABLE IF NOT EXISTS centros_custo (nome TEXT PRIMARY KEY)')
             c.execute('CREATE TABLE IF NOT EXISTS colaboradores (nome TEXT PRIMARY KEY)')
             c.execute('CREATE TABLE IF NOT EXISTS telefonia (id SERIAL PRIMARY KEY, "Numero" TEXT UNIQUE, "Conta" TEXT, "Operadora" TEXT, "Colaborador" TEXT, "CC" TEXT, "Status" TEXT DEFAULT \'Ativo\', "Gestor" TEXT)')
-            # ── MELHORIA 4: constraint SEM Gestor ──
             c.execute('''
                 CREATE TABLE IF NOT EXISTS usuarios (
                     id SERIAL PRIMARY KEY,
@@ -118,13 +115,21 @@ def init_db():
                 c.execute("INSERT INTO usuarios (email, senha, nome, nivel, cc_permitido) VALUES (%s, %s, %s, %s, %s)",
                           ('eduardo.sousa@brastelnet.com.br', SENHA_ZERAR_ESTOQUE, 'Administrador', 'Master', 'Todos'))
 
-    # ── MELHORIA 4: migração — Gestor → Almoxarife + atualizar constraint ──
+    # Migração: Gestor → Almoxarife
     try:
         with get_conn() as conn:
             with conn.cursor() as c:
                 c.execute("UPDATE usuarios SET nivel = 'Almoxarife' WHERE nivel = 'Gestor'")
                 c.execute("ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_nivel_check")
                 c.execute("ALTER TABLE usuarios ADD CONSTRAINT usuarios_nivel_check CHECK (nivel IN ('Leitor', 'Almoxarife', 'Master'))")
+    except Exception:
+        pass
+
+    # ── NOVO: Migração — adicionar coluna Patrimonio em bancos já existentes ──
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as c:
+                c.execute('ALTER TABLE estoque ADD COLUMN IF NOT EXISTS "Patrimonio" BOOLEAN DEFAULT FALSE')
     except Exception:
         pass
 
@@ -145,13 +150,6 @@ if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
 
 def enviar_email_pin(destinatario, pin):
-    """
-    MELHORIA 3 — CORREÇÃO SMTP OUTLOOK:
-    • Lê EMAIL_USER / EMAIL_PASS do bloco [email] do secrets.toml
-    • Detecta office365 para domínios brastelnet/outlook/hotmail/live
-    • ehlo() antes e depois de starttls() — obrigatório no Office 365
-    • Timeout de 15 s para não travar a UI
-    """
     try:
         msg = MIMEMultipart()
         msg['From'] = EMAIL_USER
@@ -175,7 +173,7 @@ def enviar_email_pin(destinatario, pin):
         server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
         server.ehlo()
         server.starttls()
-        server.ehlo()  # segundo ehlo obrigatório após starttls no Office 365
+        server.ehlo()
         server.login(EMAIL_USER, EMAIL_PASS)
         server.send_message(msg)
         server.quit()
@@ -280,11 +278,13 @@ def marcar_notificacoes_lidas(email: str):
 def carregar_estoque():
     with get_conn() as conn:
         with conn.cursor() as c:
-            c.execute('SELECT "Codigo", "Descricao", "Quantidade", "CC" FROM estoque')
-            df = pd.DataFrame(c.fetchall(), columns=['Codigo', 'Descricao', 'Quantidade', 'CC'])
+            # ── ALTERADO: incluir Patrimonio no SELECT ──
+            c.execute('SELECT "Codigo", "Descricao", "Quantidade", "CC", "Patrimonio" FROM estoque')
+            df = pd.DataFrame(c.fetchall(), columns=['Codigo', 'Descricao', 'Quantidade', 'CC', 'Patrimonio'])
     if not df.empty:
         df['Quantidade'] = pd.to_numeric(df['Quantidade'], downcast='integer')
         df['CC'] = df['CC'].astype('category')
+        df['Patrimonio'] = df['Patrimonio'].fillna(False).astype(bool)
     return df
 
 @st.cache_data(ttl=120, max_entries=2)
@@ -365,9 +365,16 @@ def gerar_html_comprovante(req_id):
     <div class="signatures"><div class="sig-line">Almoxarife</div><div class="sig-line">Assinatura de {req['retirante_nome']}</div></div></body></html>
     """
 
+# ── ALTERADO: template xlsx agora inclui coluna Patrimonio ──
 def gerar_template_xlsx():
     buf = io.BytesIO()
-    pd.DataFrame({'Codigo': ['ABC'], 'Descricao': ['Parafuso'], 'Quantidade': [100], 'CC': ['01/0001']}).to_excel(buf, index=False, engine='openpyxl')
+    pd.DataFrame({
+        'Codigo': ['ABC'],
+        'Descricao': ['Parafuso'],
+        'Quantidade': [100],
+        'CC': ['01/0001'],
+        'Patrimonio': [False]
+    }).to_excel(buf, index=False, engine='openpyxl')
     return buf.getvalue()
 
 def gerar_template_telefonia():
@@ -389,10 +396,6 @@ def gerar_template_carga_massa():
 # MELHORIA 1: Zerar carga de colaboradores ao excluir um código do estoque
 # ══════════════════════════════════════════════════════════════════════════════
 def zerar_carga_por_codigo(codigo: str, aprovador_email: str) -> int:
-    """
-    Cria CGMs automáticas de devolução para todos os colaboradores que
-    têm saldo em mãos do código informado. Retorna nº de devoluções criadas.
-    """
     devolvidos = 0
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -466,20 +469,38 @@ st.sidebar.markdown(f"🟢 **{total_ativos}/{LIMITE_PESSOAS}** pessoas online")
 if menu == "📊 Consulta":
     st.title("📦 Inventário Brastel")
     df_ativos = df[df['Quantidade'] > 0]
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total de Peças em Estoque", f"{df_ativos['Quantidade'].sum():.0f}")
     col2.metric("Itens Únicos Diferentes", df_ativos['Codigo'].nunique())
     col3.metric("Centros de Custo Ativos", df_ativos['CC'].nunique())
+    # ── NOVO: métrica de patrimônios ──
+    col4.metric("Itens Patrimônio", int(df_ativos['Patrimonio'].sum()) if 'Patrimonio' in df_ativos.columns else 0)
     st.divider()
-    c_b, c_f = st.columns([2, 1])
+
+    # ── ALTERADO: 3 colunas de filtro, incluindo filtro de Patrimônio ──
+    c_b, c_f, c_p = st.columns([2, 1, 1])
     busca = c_b.text_input("🔍 Pesquisar Código ou Descrição:")
     cc_filtro = c_f.selectbox("🏢 Filtrar por Centro de Custo:", ["Todos"] + lista_cc)
+    patrim_filtro = c_p.selectbox("🏷️ Patrimônio:", ["Todos", "Somente Patrimônios", "Excluir Patrimônios"])
+
     df_filt = df_ativos.copy()
-    if cc_filtro != "Todos": df_filt = df_filt[df_filt['CC'] == cc_filtro]
-    if busca: df_filt = df_filt[df_filt['Codigo'].astype(str).str.contains(busca, case=False) | df_filt['Descricao'].str.contains(busca, case=False, na=False)]
+    if cc_filtro != "Todos":
+        df_filt = df_filt[df_filt['CC'] == cc_filtro]
+    # ── NOVO: aplica filtro de patrimônio ──
+    if patrim_filtro == "Somente Patrimônios":
+        df_filt = df_filt[df_filt['Patrimonio'] == True]
+    elif patrim_filtro == "Excluir Patrimônios":
+        df_filt = df_filt[df_filt['Patrimonio'] != True]
+    if busca:
+        df_filt = df_filt[
+            df_filt['Codigo'].astype(str).str.contains(busca, case=False) |
+            df_filt['Descricao'].str.contains(busca, case=False, na=False)
+        ]
+
     if not df_filt.empty:
         buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer: df_filt.to_excel(writer, index=False)
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+            df_filt.to_excel(writer, index=False)
         st.download_button("📥 Baixar Excel", data=buf.getvalue(), file_name="Consulta.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.dataframe(df_filt, use_container_width=True, hide_index=True)
 
@@ -536,7 +557,6 @@ else:
                 if st.button("✅ Marcar todas como lidas"):
                     marcar_notificacoes_lidas(user['email']); st.rerun()
 
-        # ── MELHORIA 4: módulos sem Gestor ──
         modulos_disp = ["🛒 Requisições (RDM/CGM)", "👁️ Carga por Colaborador", "👤 Meu Perfil"]
         if user['nivel'] in ['Almoxarife', 'Master']:
             modulos_disp.extend(["📦 Gestão de Estoque", "📱 Telefonia", "📋 Carga em Massa", "📜 Relatórios e Logs"])
@@ -619,7 +639,6 @@ else:
             tabs_req = st.tabs(abas_req)
 
             with tabs_req[0]:
-                # ── MELHORIA 2: avisos se não há CC ou colaborador cadastrado ──
                 if not lista_colabs:
                     st.error("⛔ Nenhum Colaborador cadastrado. Solicite o cadastro ao administrador antes de criar uma solicitação.")
                 elif not lista_cc:
@@ -629,9 +648,7 @@ else:
                         col_t1, col_t2 = st.columns(2)
                         tipo_req = col_t1.radio("Tipo:", ["RDM (Retirar Material)", "CGM (Devolver Material)"], horizontal=True)
                         tipo_db = "RDM" if "RDM" in tipo_req else "CGM"
-                        # ── MELHORIA 2: selectbox limitado a CCs cadastrados ──
                         cc_req = col_t2.selectbox("Centro de Custo:", cc_opcoes)
-                        # ── MELHORIA 2: selectbox limitado a colaboradores cadastrados ──
                         retirante = st.selectbox("Colaborador Responsável (Que irá receber/devolver):", lista_colabs)
 
                         st.markdown(f"#### 📦 Itens da Solicitação *(máx. {MAX_ITENS_REQUISICAO})*")
@@ -647,7 +664,6 @@ else:
                         )
 
                         if st.form_submit_button("🚀 Processar e Enviar Solicitação", type="primary", use_container_width=True):
-                            # ── MELHORIA 2: validação dupla no submit ──
                             erros_trava = []
                             if cc_req not in lista_cc:
                                 erros_trava.append(f"❌ Centro de Custo **{cc_req}** não está cadastrado.")
@@ -788,7 +804,6 @@ else:
                     erros_massa = []
                     for idx, row in df_massa.iterrows():
                         if row['Tipo'] not in ('RDM', 'CGM'): erros_massa.append(f"L{idx+2}: Tipo '{row['Tipo']}' inválido.")
-                        # ── MELHORIA 2: validar CC e colaborador na carga em massa ──
                         if row['CC'] not in lista_cc: erros_massa.append(f"L{idx+2}: CC '{row['CC']}' não está cadastrado.")
                         if row['Colaborador'] not in lista_colabs: erros_massa.append(f"L{idx+2}: Colab '{row['Colaborador']}' não está cadastrado.")
                     if erros_massa:
@@ -821,14 +836,17 @@ else:
                     cod, desc_input = c1.text_input("Código:"), c2.text_input("Descrição:")
                     c3, c4, c5 = st.columns([2, 2, 1])
                     cc_sel = c3.selectbox("CC:", lista_cc)
-                    # ── MELHORIA 1: opção "Excluir Código" adicionada ──
                     op = c4.selectbox("Operação:", ["Entrada", "Saída", "Excluir Código"])
                     qtd = c5.number_input("Qtd:", min_value=1, step=1)
+                    # ── NOVO: checkbox de patrimônio ──
+                    is_patrimonio = st.checkbox(
+                        "🏷️ É Patrimônio?",
+                        help="Marque se este item é um bem patrimonial (equipamento, mobiliário, etc.)"
+                    )
                     if st.form_submit_button("✅ Confirmar"):
                         if not cod:
                             st.error("Informe o Código.")
                         elif op == "Excluir Código":
-                            # ── MELHORIA 1: cria CGMs automáticas antes de excluir ──
                             n_dev = zerar_carga_por_codigo(cod, user['email'])
                             with get_conn() as conn:
                                 with conn.cursor() as cur:
@@ -847,14 +865,23 @@ else:
                                         if res:
                                             if op == "Saída":
                                                 if res['Quantidade'] < qtd: st.error("FALTA DE ESTOQUE!")
-                                                else: cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, cod, cc_sel)); st.success("Saída!")
-                                            else: cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, cod, cc_sel)); st.success("Entrada!")
+                                                else:
+                                                    cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" - %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, cod, cc_sel))
+                                                    st.success("Saída registrada!")
+                                            else:
+                                                # ── ALTERADO: Entrada também atualiza flag Patrimonio ──
+                                                cur.execute('UPDATE estoque SET "Quantidade" = "Quantidade" + %s, "Patrimonio" = %s WHERE "Codigo"=%s AND "CC"=%s', (qtd, is_patrimonio, cod, cc_sel))
+                                                st.success("Entrada registrada!")
                                         else:
                                             if op == "Saída": st.error("ITEM NÃO ENCONTRADO.")
-                                            else: cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC") VALUES (%s, %s, %s, %s)', (cod, de or desc_input, qtd, cc_sel)); st.success("Cadastrado!")
+                                            else:
+                                                # ── ALTERADO: INSERT inclui Patrimonio ──
+                                                cur.execute('INSERT INTO estoque ("Codigo", "Descricao", "Quantidade", "CC", "Patrimonio") VALUES (%s, %s, %s, %s, %s)', (cod, de or desc_input, qtd, cc_sel, is_patrimonio))
+                                                st.success("Cadastrado!")
                                 st.cache_data.clear()
             with tabs_est[1]:
                 st.download_button("⬇️ Template", gerar_template_xlsx(), "template.xlsx")
+                st.caption("ℹ️ A coluna **Patrimonio** aceita `TRUE`/`FALSE` ou `1`/`0`. Deixe em branco para não-patrimônio.")
                 arquivo = st.file_uploader("Arquivo (.xlsx):", type=["xlsx"])
                 if arquivo and st.button("🚀 Processar Importação"):
                     df_u = pd.read_excel(arquivo, engine='openpyxl')
@@ -863,6 +890,11 @@ else:
                         df_u['Codigo'], df_u['CC'] = df_u['Codigo'].astype(str).str.strip(), df_u['CC'].astype(str).str.strip()
                         df_u['Quantidade'] = pd.to_numeric(df_u['Quantidade'], errors='coerce')
                         df_u = df_u.dropna(subset=['Quantidade'])
+                        # ── NOVO: lê coluna Patrimonio se existir, senão assume False ──
+                        if 'Patrimonio' in df_u.columns:
+                            df_u['Patrimonio'] = df_u['Patrimonio'].fillna(False).astype(bool)
+                        else:
+                            df_u['Patrimonio'] = False
                         inv_ccs = set(df_u['CC'].unique()) - set(lista_cc)
                         if inv_ccs: st.error(f"CCs não encontrados: {', '.join(inv_ccs)}")
                         else:
@@ -872,10 +904,18 @@ else:
                                     db_set = set((r['Codigo'], r['CC']) for r in cur.fetchall())
                                     ins, upd = [], []
                                     for _, row in df_u.iterrows():
-                                        if (row['Codigo'], row['CC']) in db_set: upd.append((row['Quantidade'], row['Codigo'], row['CC']))
-                                        else: ins.append((row['Codigo'], row['Descricao'], row['Quantidade'], row['CC'])); db_set.add((row['Codigo'], row['CC']))
-                                    if ins: cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC") VALUES (%s,%s,%s,%s)', ins)
-                                    if upd: cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s WHERE "Codigo"=%s AND "CC"=%s', upd)
+                                        pat_val = bool(row.get('Patrimonio', False))
+                                        if (row['Codigo'], row['CC']) in db_set:
+                                            # ── ALTERADO: upd inclui Patrimonio ──
+                                            upd.append((row['Quantidade'], pat_val, row['Codigo'], row['CC']))
+                                        else:
+                                            # ── ALTERADO: ins inclui Patrimonio ──
+                                            ins.append((row['Codigo'], row['Descricao'], row['Quantidade'], row['CC'], pat_val))
+                                            db_set.add((row['Codigo'], row['CC']))
+                                    if ins:
+                                        cur.executemany('INSERT INTO estoque ("Codigo","Descricao","Quantidade","CC","Patrimonio") VALUES (%s,%s,%s,%s,%s)', ins)
+                                    if upd:
+                                        cur.executemany('UPDATE estoque SET "Quantidade" = "Quantidade" + %s, "Patrimonio" = %s WHERE "Codigo"=%s AND "CC"=%s', upd)
                             st.success("Importação concluída!"); st.cache_data.clear(); st.rerun()
 
         elif modulo_ativo == "📱 Telefonia":
@@ -966,7 +1006,6 @@ else:
                     with st.form("fu"):
                         u1, u2 = st.columns(2); e, s = u1.text_input("E-mail:"), u2.text_input("Senha:", type="password")
                         u3, u4 = st.columns(2)
-                        # ── MELHORIA 4: NIVEIS_USUARIO sem Gestor ──
                         n = u3.selectbox("Nível:", NIVEIS_USUARIO)
                         c = u4.multiselect("CCs:", ["Todos"] + lista_cc, default=["Todos"])
                         if st.form_submit_button("Criar") and e and s:
@@ -981,7 +1020,6 @@ else:
                         ud = next(u for u in lista_u if u['email'] == se)
                         with st.form("feu"):
                             st.write(f"Editando: **{ud['nome']}**")
-                            # ── MELHORIA 4: migração automática Gestor→Almoxarife na edição ──
                             nivel_atual = ud['nivel'] if ud['nivel'] in NIVEIS_USUARIO else 'Almoxarife'
                             nn = st.selectbox("Nível:", NIVEIS_USUARIO, index=NIVEIS_USUARIO.index(nivel_atual))
                             cca = [cx for cx in ud['cc_permitido'].split('|') if cx in ["Todos"] + lista_cc] or ["Todos"]
@@ -1099,7 +1137,6 @@ else:
                         st.success("Telefonia limpa!"); st.cache_data.clear(); st.rerun()
                     ce = st.text_input("Apagar Cód. Específico (Estoque):")
                     if ce and aprovar_acao_master("d_c", f"Apagar {ce}"):
-                        # ── MELHORIA 1: zerar carga antes de apagar código específico ──
                         n_dev = zerar_carga_por_codigo(ce, user['email'])
                         with get_conn() as conn:
                             with conn.cursor() as cur: cur.execute('DELETE FROM estoque WHERE "Codigo"=%s', (ce,))
